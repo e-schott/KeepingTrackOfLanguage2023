@@ -1,0 +1,5 @@
+age_group,trial_type,mean
+12,same,0.084
+12,switch,0.085
+18,same,0.088
+18,switch,0.11

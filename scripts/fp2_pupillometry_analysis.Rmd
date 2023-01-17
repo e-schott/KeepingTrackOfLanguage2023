@@ -1,0 +1,411 @@
+---
+title: "pupillometry analysis Study 2 (abbreviated as fp)"
+output: html_document
+---
+
+# setup
+## library() calls
+see groundhog_packages.R for more package setup
+```{r setup, include=FALSE}
+# load all required libraries using the groundhog package (installs libraries that are not installed yet)
+source("load_packages.R")
+
+
+```
+
+
+## define variables
+```{r}
+baseline_start <- 1800
+baseline_end <- baseline_start + 200
+analysis_start <- baseline_end
+analysis_end <- 5000
+bin_size <- 200
+```
+
+
+## read data
+```{r pressure, echo=FALSE}
+fp_data <- readRDS(here("output", "processed_data", "fp_preprocessed.Rdata"))
+```
+
+
+## save csv for reviewers to analyze without R
+```{r}
+fp_data %>% write_csv(here("output","processed_data", "csv_files", "pupil_all_data.csv"))
+```
+
+## remove non-keepers & keep only test phase
+```{r}
+fp_data <- fp_data %>%
+  filter(exclude_summary == "keeper", phase == "test")
+```
+## number of participants
+```{r}
+fp_data %>%
+  distinct(part_id, .keep_all = T) %>%
+  group_by(age_group, lang_group) %>%
+  count() %>%
+  adorn_totals()
+```
+
+
+## create a unique trial variable
+check if I need this
+```{r}
+fp_data <- fp_data %>%
+  mutate(trial_unique = str_glue("{substr(study,1,1)}P_{part_id}_t{str_pad(trial_number,2,'left', '0')}"))
+```
+
+
+
+# preparation for pupillometry analysis
+## check if there are trials where participant does not have pupil measures
+```{r}
+# identify any trials where the child has NO pupil data at all
+has_pupil <- fp_data %>%
+  mutate(mean_pupil = (pupil_left + pupil_right) / 2) %>%
+  group_by(study, part_id, trial_number)
+
+## during analysis window
+has_pupil_analysis <- has_pupil %>%
+  filter(between(
+    timestamp,
+    analysis_start,
+    analysis_end + bin_size
+  )) %>% # additional 100ms to get rid of extreme values at the end introduced by filtering and interpolation
+  filter(any(!is.na(mean_pupil)))
+
+## during baseline
+has_pupil_baseline <- has_pupil %>%
+  filter(between(timestamp, baseline_start, baseline_end)) %>%
+  filter(any(!is.na(mean_pupil)))
+
+# remove those trials from dataset, otherwise code will produce error
+mtl_data_pupil <- fp_data %>%
+  filter(trial_unique %in% has_pupil_analysis$trial_unique & trial_unique %in% has_pupil_baseline$trial_unique) %>%
+  filter(between(timestamp, 1, analysis_end + bin_size))
+```
+## flag trials that have only trackloss and no data
+if not done, regress_data does not work
+```{r}
+fp_data <- fp_data %>%
+  mutate(mean_pupil = mean(c(pupil_left, pupil_right), na.rm = T)) %>%
+  group_by(part_id, trial_number) %>%
+  mutate(no_eye_data_for_full_trial = ifelse(all(is.na(mean_pupil) == TRUE), 1, 0)) %>%
+  ungroup()
+fp_data %>% tabyl(no_eye_data_for_full_trial)
+```
+## number of participants
+```{r}
+fp_data %>%
+  distinct(part_id, .keep_all = T) %>%
+  group_by(age_group, lang_group) %>%
+  count() %>%
+  adorn_totals()
+```
+
+
+## pupillometryR pre-processing 
+### make_pupillometry_data
+```{r}
+# make pupilometry data
+data_pupil <- make_pupillometryr_data(
+  data = fp_data,
+  subject = part_id,
+  trial = trial_number,
+  time = timestamp,
+  condition = trial_type,
+  other = lang_group
+)
+# plot(data_pupil, pupil = pupil_left, group = 'condition')
+###
+##
+```
+### regress missing values where only data from one eye is missing
+```{r}
+round(cor(data_pupil$pupil_left, data_pupil$pupil_right, use = "pairwise.complete.obs"), 2)
+# correlation is very high, okay to regress
+
+# regress data to smooth using data from one pupil to get the other
+pupil_regress <-
+  regress_data(
+    data = data_pupil %>%
+      filter(no_eye_data_for_full_trial != 1),
+    pupil1 = pupil_left,
+    pupil2 = pupil_right
+  )
+```
+
+
+### average across pupils
+```{r}
+# get mean pupil sizes
+averaged_pupil_size <- calculate_mean_pupil_size(
+  data = pupil_regress,
+  pupil1 = pupil_left,
+  pupil2 = pupil_right
+)
+
+plot(averaged_pupil_size, pupil = mean_pupil, group = "condition")
+```
+### downsample to timebins
+```{r}
+# Calculating median pupil size in each timebin
+downsampled_data <- downsample_time_data(
+  data = averaged_pupil_size,
+  pupil = mean_pupil,
+  timebin_size = bin_size,
+  option = "mean"
+)
+
+plot(downsampled_data, pupil = mean_pupil, group = "condition")
+```
+
+
+### look at missing data
+```{r}
+
+missing <- calculate_missing_data(
+  downsampled_data,
+  mean_pupil
+)
+
+removed_high_missing_data <- clean_missing_data(downsampled_data,
+  pupil = mean_pupil,
+  trial_threshold = .75,
+  subject_trial_threshold = 1
+)
+
+# check how many trials we still have
+dictionary_additional_part_to_exclude <- removed_high_missing_data %>%
+  group_by(part_id, trial_type) %>%
+  summarize(n_trials = n_distinct(trial_number)) %>%
+  group_by(part_id) %>%
+  mutate(trial_type = factor(trial_type)) %>%
+  complete(trial_type, fill = list(n_trials = 0)) %>%
+  pivot_wider(names_from = trial_type, values_from = n_trials) %>%
+  mutate(exclude_not_enough_trials = ifelse(same == 0 | switch == 0, 1, 0)) %>%
+  arrange(exclude_not_enough_trials)
+
+# need to remove those that do not have 1 switch and 1 same trial
+removed_high_missing_data <- removed_high_missing_data %>%
+  full_join(dictionary_additional_part_to_exclude %>% select(part_id, exclude_not_enough_trials)) %>%
+  filter(exclude_not_enough_trials == 0)
+
+
+plot(removed_high_missing_data, pupil = mean_pupil, group = "condition")
+```
+
+#### number of participants before and after removing
+```{r}
+downsampled_data %>%
+  separate(part_id, into = c("study", "id"), remove = F) %>%
+  group_by(study, lang_group) %>%
+  summarize(n = n_distinct(part_id)) %>%
+  pivot_wider(names_from = lang_group, values_from = n) %>%
+  adorn_totals()
+
+
+removed_high_missing_data %>%
+  separate(part_id, into = c("study", "id"), remove = F) %>%
+  group_by(study, lang_group) %>%
+  summarize(n = n_distinct(part_id)) %>%
+  pivot_wider(names_from = study, values_from = n) %>%
+  adorn_totals()
+```
+### trials before and after removing
+```{r}
+N_participants_before <- downsampled_data %>%
+  summarize(participants = n_distinct(part_id)) %>%
+  pull()
+
+N_trials_before <- downsampled_data %>%
+  distinct(part_id, trial_number) %>%
+  count() %>%
+  pull()
+
+
+N_participants_after <- removed_high_missing_data %>%
+  summarize(participants = n_distinct(part_id)) %>%
+  pull()
+
+N_trials_after <- removed_high_missing_data %>%
+  distinct(part_id, trial_number) %>%
+  count() %>%
+  pull()
+
+removed_by_pupillometry_r <- 65 # see output of clean_missing_data() above
+removed_by_pupillometry_r / N_trials_before * 100
+missingness_summary <- tibble(
+  metric = c("participants", "trials"),
+  before = c(N_participants_before, N_trials_before),
+  after = c(N_participants_after, N_trials_after),
+  removed = before - after,
+  removed_percent = removed / before * 100
+)
+missingness_summary %>% write_csv(here("output", "tables", "pupil_Ns.csv"))
+```
+
+
+### filter data
+```{r}
+removed_high_missing_data %>%
+  filter(timestamp < baseline_end) %>%
+  mutate(na = is.na(mean_pupil)) %>%
+  tabyl(Timebin, na)
+# step to filter data
+filtered_data <- filter_data(
+  data = removed_high_missing_data,
+  pupil = mean_pupil,
+  filter = "median",
+  degree = 11
+) # package recommends 11, and it looks fine
+filtered_data %>%
+  filter(timestamp < baseline_end) %>%
+  mutate(na = is.na(mean_pupil)) %>%
+  tabyl(Timebin, na)
+plot(filtered_data, pupil = mean_pupil, group = "condition")
+```
+### interpolate data 
+
+```{r}
+int_data <- interpolate_data(
+  data = filtered_data,
+  pupil = mean_pupil,
+  type = "linear"
+)
+# Performing linear interpolation
+
+plot(int_data, pupil = mean_pupil, group = "condition")
+# removed the final timebin because the end got messed up with filtering/interpolation (very extreme values)
+int_data %<>% filter(timestamp <= analysis_end)
+```
+## baseline
+```{r}
+base_data <- baseline_data(
+  data = int_data,
+  pupil = mean_pupil,
+  start = baseline_start,
+  stop = baseline_end
+)
+
+plot(base_data, pupil = mean_pupil, group = "condition") +
+  geom_vline(xintercept = baseline_start) +
+  geom_vline(xintercept = baseline_end)
+```
+# data analysis
+
+
+## plot by study and age
+```{r}
+base_data %>%
+  separate(part_id, c("study", "id"), sep = "_", remove = F) %>%
+  filter(lang_group != "bilingual-other", between(timestamp, baseline_end - 300, analysis_end)) %>%
+  mutate(time_from_onset = timestamp - 2000) %>%
+  ggplot(., aes(x = time_from_onset, y = mean_pupil, colour = trial_type)) +
+  geom_smooth(size = 1.5, fill = "lightgrey") +
+  xlab("Time from onset of speech") +
+  ylab("Change in pupil size") +
+  facet_wrap(vars(study, lang_group), ncol = 4) +
+  theme_classic() +
+  theme(text = element_text(size = 20), legend.position = "bottom") +
+  scale_color_brewer(palette = "Set2", name = "Trial Type")
+ggsave(here("output", "figures", "pupil_dilation.png"), width = 15, height = 5)
+```
+## across whole time window
+```{r}
+whole_window <- base_data %>%
+  subset_data(analysis_start, analysis_end) %>%
+  create_window_data(
+    data = .,
+    pupil = mean_pupil
+  )
+
+plot(whole_window, pupil = mean_pupil, geom = "raincloud")
+ggsave("pupil dilation.png")
+```
+## add in some variables that got lost in pipeline
+```{r}
+whole_window %<>%
+  # add lang_group
+  left_join(base_data %>% select(part_id, lang_group) %>% distinct()) %>%
+  # get a separate study variable
+  separate(part_id, into = c("study", "id"), sep = "_", remove = F) %>%
+  mutate(
+    age_group = str_extract(study, "\\d+"),
+    study_type = substr(study, 1, 2),
+    lang_group = relevel(factor(lang_group), ref = "monolingual")
+  )
+
+
+
+ggplot(whole_window, aes(x = trial_type, y = mean_pupil, group = part_id, colour = trial_type)) +
+  geom_point() +
+  geom_line(colour = "darkgrey") +
+  facet_grid(rows = vars(age_group), cols = vars(lang_group))
+```
+## save csv for reviewers to analyze without R
+```{r}
+whole_window %>% write_csv(here("output","processed_data", "csv_files", "pupil_anova.csv"))
+```
+
+## number of participants
+```{r}
+whole_window %>%
+  distinct(part_id, .keep_all = T) %>%
+  group_by(age_group, lang_group) %>%
+  count()
+```
+
+## anovas
+```{r}
+anova_FP_12mo <- whole_window %>%
+  filter(age_group == "12") %>%
+  ezANOVA(
+    dv = mean_pupil,
+    wid = part_id,
+    within = trial_type,
+    between = lang_group,
+    return_aov = TRUE
+  )
+anova_FP_12mo
+anova_FP_12mo_text <- convert_anova_to_apa_text(anova_FP_12mo)
+
+anova_FP_18mo <- whole_window %>%
+  filter(age_group == "18") %>%
+  ezANOVA(
+    dv = mean_pupil,
+    wid = part_id,
+    within = trial_type,
+    between = lang_group,
+    return_aov = TRUE
+  )
+
+(anova_FP_18mo_text <- convert_anova_to_apa_text(anova_FP_18mo))
+```
+# results
+```{r}
+results <- full_join(
+  enframe(anova_FP_12mo_text, value = "anova_12mo_pupil") %>% unnest(cols = c(anova_12mo_pupil)),
+  enframe(anova_FP_18mo_text, value = "anova_18mo_pupil") %>% unnest(cols = c(anova_18mo_pupil))
+) %>%
+  mutate(sort = nchar(name)) %>%
+  arrange(sort, desc(name)) %>%
+  select(-sort) %>%
+  as_tibble()
+results %>%
+  write_csv(here("output", "tables", "fp_pupillometry.csv"))
+```
+
+
+
+## calculate mean change in pupil dilation
+```{r}
+summary <- whole_window %>%
+  group_by(age_group, trial_type) %>%
+  summarize(mean = round(mean(mean_pupil, na.rm = T), 3))
+
+summary %>%
+  write_csv(here("output", "tables", "fp_pupillometry_means.csv"))
+```

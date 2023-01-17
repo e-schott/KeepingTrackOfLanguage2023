@@ -1,0 +1,106 @@
+---
+appendix: Supplemental.Rmd
+output: word_document
+
+---
+Supplementary materials for Manuscript _Keeping track of language_
+written by Esther Schott
+```{r}
+
+```
+
+```{r library, include=FALSE}
+# load all required libraries using the groundhog package (installs libraries that are not installed yet)
+
+packages_used <- c(
+  "rmarkdown", "codebook", "labelled", "devtools",
+  "pander", "knitr", "forcats", "beepr",
+  "anytime", "apaTables", "arsenal", "broom", "diffdf", "dplyr", "data.table",
+  "eyetrackingR", "ez", "forcats", "ggbeeswarm", "ggplot2", "glue",
+  "here", "janitor", "lme4", "lubridate", "magrittr",
+  "Matrix", "PupillometryR", "purrr", "RColorBrewer",
+  "readr", "readxl", "rio", "rlang", "stringr", "tibble",
+  "tidyr", "tidylog", "TOSTER", "zoo"
+)
+for (i in packages_used) {
+  library(i, character.only = T)
+}
+library(papaja)
+library(introdataviz)
+library(rempsyc)
+knit(here("scripts", "lpfp_eyemovement_analysis.Rmd"))
+```
+
+# Supplemental Materials
+
+## Participant groups where recruitment was stopped
+
+These participants included 3 9-month-olds (all bilinguals),  37 18-month-olds (9 bilingual, 17 monolingual, 11 who did not fit the criteria for either bi- or monolingual), as well as bilinguals with English or French and another language: 15 bilingual-other 5-months-olds and 9 bilingual-other 12-month-olds. 
+
+
+## robustness analysis ANOVA
+Table S1
+```{r}
+
+robust_anova <- all %>%
+  select(name, robust, group) %>%
+  nice_table() %>%
+  save_as_docx(path = here("output", "tables", "TableS1_anova.docx"))
+```
+
+## equivalence test
+Table S2
+```{r}
+eq_tests
+
+eq_tests[, c(1:2, 4)] %>%
+  nice_table() %>%
+  save_as_docx(path = here("output", "tables", "TableS2_equivalence.docx"))
+```
+
+## correlation exposure to domiannt langauge
+Table S3
+```{r}
+correlation_dominant_language %>%
+  select(-log_transformed) %>%
+  separate(untransformed, into = c(
+    "r", "CI_1", "CI_2", "t_test",
+    "p"
+  ), sep = ",") %>%
+  mutate(
+    CI = paste(CI_1, CI_2, sep = ", "),
+    t_test = paste(t_test, p, sep = ", ")
+  ) %>%
+  select(analysis_type, r, CI, t_test) %>%
+  nice_table() %>%
+  save_as_docx(path = here("output", "tables", "TableS3_correlation.docx"))
+```
+## correlation langauge mixing 
+```{r}
+correlation_lang_mix %>%
+  select(-log_transformed) %>%
+  separate(untransformed, into = c(
+    "r", "CI_1", "CI_2", "t_test",
+    "p"
+  ), sep = ",") %>%
+  mutate(
+    CI = paste(CI_1, CI_2, sep = ", "),
+    t_test = paste(t_test, p, sep = ", ")
+  ) %>%
+  select(analysis_type, r, CI, t_test) %>%
+  nice_table() %>%
+  save_as_docx(path = here("output", "tables", "TableS4_correlation_lang_mix.docx"))
+```
+
+
+
+## direction of switch
+Table S4
+```{r}
+
+combined_switch_anova_results %>%
+  select(-trans) %>%
+  select(-sorting_variable) %>%
+  nice_table() %>%
+  save_as_docx(path = here("output", "tables", "TableS5_switch_anova.docx"))
+```

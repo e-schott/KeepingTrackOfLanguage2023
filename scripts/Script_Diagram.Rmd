@@ -1,0 +1,62 @@
+---
+title: "create graph to visalize order of execution for scripts"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(DiagrammeR)
+library(rsvg)
+library(DiagrammeRsvg)
+library(here)
+here()
+```
+
+# create and plot graph
+
+```{r graph}
+grViz("
+digraph boxes_and_circles {
+
+  # a 'graph' statement
+  graph [overlap = true, fontsize = 10]
+
+  # several 'node' statements
+  node [shape = box]
+  
+
+
+
+    # node definitions with substituted label text
+  node [fontname = Helvetica, color = blue]
+  D [label = 'lp4_participant_exclusion_steps.Rmd']
+  E [label = 'lp5_data_preparation.Rmd']
+  # fp nodes
+  G [label = 'fp1_data_preparation.Rmd']
+  H [label = 'fp2_pupillometry_analysis.Rmd']
+  # shared nodes
+  I [label = 'lpfp_eyemovement_analysis.Rmd']
+  X [label = 'lpfp_supplemental.Rmd']
+  Z [label = 'load_packages.R']
+
+  node [fontname = Helvetica, color = darkgrey]
+  A [label = 'lp1_read_eye_data.Rmd']
+  B [label = 'lp2_clean_eye_data.Rmd']
+  J [label = 'lp_double_checking_msl.Rmd']
+  C [label = 'lp3_merge_clean_part_list.Rmd']
+  F [label = 'fp0_merge.Rmd']
+
+  # 'edge' statements
+ A->B B->D C->D D->E E->I G->H G->I F->G C->F I->X J->C
+}
+") %>%
+  export_svg() %>%
+  charToRaw() %>%
+  rsvg_png(here("output/LPFP_Script_Overview.png"), width = 800, height = 700)
+```
+
+# run styler on all scripts
+```{r}
+library(styler)
+style_dir(here("scripts"), filetype = "Rmd")
+```
+

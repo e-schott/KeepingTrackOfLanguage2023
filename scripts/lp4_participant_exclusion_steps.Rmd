@@ -1,0 +1,384 @@
+---
+title: "LittlePrince Participant Background Info"
+output:
+  html_document:
+    df_print: paged
+---
+# Script prep
+## load packages
+
+see groundhog_packages.R for more package setup
+```{r setup, include=FALSE}
+# load all required libraries using the groundhog package (installs libraries that are not installed yet)
+source("load_packages.R")
+```
+
+
+
+# Read Participant Background info
+
+```{r}
+
+part_list <- readRDS(here("output", "processed_data", "anonymized_participant_info", "lp_part_info.Rdata"))
+```
+
+
+
+
+
+
+#  check exclusion criteria
+## medical
+### problems during pregnancy 
+
+#### weeks at birth
+
+
+```{r}
+part_list %>%
+  select(study, part_id, pregnancy) %>%
+  filter(pregnancy > 42 |
+    pregnancy < 37 |
+    is.na(pregnancy)) %>%
+  arrange(desc(pregnancy))
+
+print("need to check, weeks at birth missing")
+(missing.weeks <- part_list %>%
+  filter(is.na(pregnancy)) %>%
+  select(part_id, pregnancy))
+# for LP5_P058, LP12_P073 and LP5_P014, we don't have the info (not in infant database, not in demographics)
+# since premature birth is rare, will assume they were on term
+# LP5_P026 is born at 37 weeks, corrected in demographics database
+# LP12_P079 is actually 39 1/2 weeks, corrected to 40wks in filemaker demo quest
+# LP12_P067 is actually 40 weeks (based on infant database)
+print("outliers, check if correct")
+(flagged.weeks <- part_list %>%
+  filter(pregnancy > 43) %>%
+  select(part_id, pregnancy))
+
+
+part_list <- part_list %>% mutate(exclude_premature = ifelse(pregnancy < 37, 1, 0))
+print("exclude for prematurity (based on gestation )")
+(part_list %>% filter(exclude_premature == 1) %>% select(part_id, pregnancy))
+```
+
+#### birth weight
+
+
+```{r}
+part_list <- part_list %>% mutate(
+  weightlbs = as.numeric(weightlbs),
+  weight_oz_corrected = case_when(
+    !is.na(weightlbs) & is.na(weightoz) ~ 0,
+    weightoz > 16 ~ NA_real_,
+    TRUE ~ as.numeric(weightoz)
+  ),
+  weight_lb_in_gram = weightlbs * 453 + weight_oz_corrected * 28.34,
+  weight_in_grams_unified = ifelse(!is.na(weightgrams),
+    weightgrams,
+    weight_lb_in_gram
+  )
+)
+```
+
+
+#### now check which kids don't fit
+
+used 2-5kg as reasonable weight at birth (anything lower or higher will be flagged as potentially unplausible. 97% for weight at birth is 4500 but we had a couple of babies between 4500 and 5000, and very few above 5000 so assume that is reasonable cutoff)
+```{r}
+(flagged.weight <- part_list %>%
+  select(study, part_id, weight_in_grams_unified, weightgrams, weightlbs, weight_oz_corrected) %>%
+  filter(!between(weight_in_grams_unified, 2000, 5000)) %>%
+  arrange(desc(weightlbs)))
+
+# LP12_P099, LP12_P051 no info on infant database
+# LP12_P060 has 3269 at birth on infant database
+# LP18_P016 is probably 8 pounds 9 oz instead of 91
+
+missing.weight <- part_list %>%
+  filter(is.na(weight_in_grams_unified)) %>%
+  select(part_id, weight_in_grams_unified, weightgrams, weightlbs, weightoz)
+# for LP12_P073,LP5_P035,LP5_P058  we don't have the info (not in infant database, not in demographics)
+# for LP5_P064 database says term 37wks and birth weight 2720g > did not change on demo database but won't exclude that kid
+```
+
+#### exclude babies for prematurity (based on birth weight)
+```{r}
+part_list <- part_list %>% mutate(exclude_premature = case_when(
+  weight_in_grams_unified < 2500 ~ 1,
+  pregnancy < 37 ~ 1,
+  weight_in_grams_unified >= 2500 ~ 0,
+  pregnancy >= 37 ~ 0,
+  TRUE ~ 0
+)) # for babies with missing data, won't exclude them because prematurity is rare
+print("exclude for prematurity (based on gestation and birth weight)")
+(part_list %>% filter(exclude_premature == 1) %>% select(part_id, pregnancy, weight_in_grams_unified))
+```
+#### specific Pregnancy complications:
+
+```{r}
+part_list %>%
+  select(part_id, complicationspregnancydetails, exclude_premature) %>%
+  filter(!is.na(complicationspregnancydetails) & exclude_premature != 1)
+```
+I treat as serious: 
+placenta abruption (LP12_P026)
+
+
+
+### post-natal medical problems
+
+
+#### General medical problems
+```{r}
+part_list %>%
+  select(part_id, medicalproblemsdetails) %>%
+  filter(!is.na(medicalproblemsdetails))
+# seems ok
+```
+#### hearing-vision problems
+
+```{r}
+part_list %>%
+  filter(
+    !is.na(hearingvisionproblemsdetails),
+    exclude_premature != 1
+  ) %>%
+  select(part_id, study, hearingvisionproblemsdetails)
+# none excluded
+```
+
+#### current ear infection
+- discussed with Krista and will not exclude for this, because parents aren't good at telling if a kid has an ear infection and it's not clear that Little prince would be very sensitive to excellent hearing vs ok hearing
+
+
+```{r}
+part_list %>%
+  select(part_id, earinfectioncurrent) %>%
+  filter(earinfectioncurrent %in% c("Oui", "Yes"))
+table(part_list$earinfectioncurrent)
+# after discussion wiht kbh, will not exclude these kids
+```
+#### current cold
+
+```{r}
+
+table(part_list$cold)
+print("after discussion with KBH, did not exclude anyone because there's a lot of kids (parents have low thresholds?)")
+```
+#### other
+
+```{r}
+part_list %>%
+  select(study, part_id, otherrelevantinfo) %>%
+  filter(!is.na(otherrelevantinfo), !otherrelevantinfo %in% c("No", "Non", "no", "non", "NA"))
+# exclude LP12_P095	born prematurely with underdeveloped lungs
+# LP12_P095 is already excluded because born at 36 weeks.
+```
+
+
+### create summary variable exclude_medical
+```{r}
+
+part_list <- part_list %>%
+  mutate(exclude_medical = case_when(
+    exclude_premature == 1 ~ 0, # if already excluded for prematurity, no need to check medical conditions
+    complicationspregnancydetails == "décollement du placenta" ~ 1,
+    TRUE ~ 0
+  ))
+# which babies are excluded?
+part_list %>%
+  filter(exclude_medical == 1) %>%
+  pull(part_id)
+```
+
+## check age criteria
+using data from main subjects list (participant list)
+
+### function to calculate age:
+```{r}
+average_days_per_month <- 365 / 12
+# calculate ages
+age_md <- function(x, scale = "months") {
+  # takes an age in days and returns age in months and days
+  months <- floor(x / average_days_per_month)
+  days <- round(x - average_days_per_month * months)
+  if (scale == "months") {
+    return(months)
+  } else if (scale == "days") {
+    return(days)
+  } else {
+    stop("please enter either either months or days for argument scale")
+  }
+}
+```
+### create age range criteria
+```{r}
+age_ranges <- tibble(age_group = c(5, 12, 18), min_age_months = age_group - 1, max_age_months = age_group + 1)
+
+# convert months to continuous age calculation
+age_ranges <- age_ranges %>%
+  mutate(
+    min_age_continuous = min_age_months * average_days_per_month + 15,
+    max_age_continuous = max_age_months * average_days_per_month + 15
+  ) %>%
+  # convert to time difference (adds days unit)
+  mutate(
+    min_age_continuous = as.difftime(min_age_continuous, units = "days"),
+    max_age_continuous = as.difftime(max_age_continuous, units = "days")
+  )
+
+write_csv(age_ranges, here("data", "age_ranges.csv"))
+```
+
+
+
+### create age group variable
+
+```{r}
+part_list <- part_list %>%
+  mutate(age_group = as.double(str_extract(study, "[0-9]{1,2}"))) %>%
+  left_join(age_ranges %>% select(age_group, min_age_continuous, max_age_continuous), by = "age_group") # %>%
+
+part_list <- part_list %>%
+  rowwise() %>%
+  mutate(exclude_age = case_when(
+    between(as.numeric(age_in_days), as.numeric(min_age_continuous), as.numeric(max_age_continuous)) ~ 0,
+    TRUE ~ 1
+  )) %>%
+  ungroup() %>%
+  select(-min_age_continuous, -max_age_continuous)
+```
+
+
+ 
+
+
+## language criteria
+### check language exposure
+
+Check that % of langauge adds up to 100 +/- 1
+
+```{r}
+part_list$percent_total <- with(part_list, percent_english + percent_french + percent_other)
+part_list %>%
+  select(part_id, percent_total, percent_english, percent_french, percent_other) %>%
+  filter(!(percent_total >= 99 & percent_total <= 101) | is.na(percent_total)) %>%
+  arrange(desc(percent_total))
+```
+
+
+no more than 1% off from 100 - within margin of rounding error
+
+### check language dominance assignment
+```{r}
+
+part_list <- part_list %>%
+  rowwise() %>%
+  mutate(
+    dominant_language_old = dominant_language,
+    dominant_language = str_to_title(dominant_language),
+    dominant_en_fr = case_when(
+      percent_english > percent_french ~ "English",
+      percent_english < percent_french ~ "French",
+      percent_english == percent_french ~ "Balanced"
+    )
+  )
+
+# for this child, maternal language is English
+part_list$dominant_en_fr[part_list$part_id == "LP12_P083"] <- "English"
+# mom is bilingual (grew up hearing both English and French). Went with CDI -> more words in French
+part_list$dominant_en_fr[part_list$part_id == "LP12_P027"] <- "French"
+
+part_list %>%
+  filter(dominant_en_fr == "Balanced") %>%
+  select(part_id, study, percent_english, percent_french)
+part_list %>%
+  group_by(dominant_en_fr) %>%
+  summarize(N = n())
+# the only uncategorized balanced kids are non-keepers based on language
+```
+
+
+
+
+### flag kids for exclusion based on language exposure
+ monolingual: at least 90% of either Eng or French 
+ bilingual: at least 25 % exposure to French, 25% to English, no more than 10% to L3
+
+
+```{r}
+part_list <- part_list %>%
+  mutate(
+    lang_group = case_when(
+      percent_english >= 90 | percent_french >= 90 ~ "monolingual",
+      (percent_english >= 25 | percent_french >= 25) & percent_other >= 25 ~ "bilingual-other",
+      percent_other > 20 ~ "none", # neither bilingual-other nor bilingual ( L3 criteria)
+      between(percent_english, 25, 75) & between(percent_french, 25, 75) ~ "bilingual",
+      TRUE ~ "none"
+    ),
+    lang_group = factor(lang_group)
+  )
+
+part_list %>% select(part_id, lang_group, percent_english, percent_french, percent_other)
+```
+
+### flag kids who don't fit either language group or are bilingual-other
+
+```{r}
+
+part_list <- part_list %>%
+  mutate(exclude_language = ifelse(lang_group %in% c("none", "bilingual-other"), 1, 0))
+```
+
+## prior study exclusions
+by accident, LP5_P012 participated again as LP12_P045 - keep only first visit
+```{r}
+
+# need to exclude the second visit at 12 months of age
+part_list <- part_list %>%
+  mutate(exclude_priorStudy = ifelse(part_id == "LP12_P045", 1, 0))
+```
+# final prep steps
+
+## create Summary variable of reasons for exclusion
+
+```{r}
+
+
+
+part_list <- part_list %>% mutate(
+  exclude_summary = case_when(
+    exclude_priorStudy == 1 ~ "0_experimenterError", # should not have been scheduled
+    age_group %in% c(9, 18) ~ "5_recruitment_stopped",
+    exclude_age == 1 ~ "1_age", # should not have been scheduled
+    exclude_premature == 1 ~ "2_preterm",
+    exclude_medical == 1 ~ "3_health",
+    lang_group == "bilingual-other" ~ "5_recruitment_stopped",
+    exclude_language == 1 ~ "4_language",
+    TRUE ~ "keeper"
+  ),
+  exclude = case_when(
+    exclude_summary != "keeper" ~ 1,
+    TRUE ~ 0
+  )
+)
+```
+
+
+
+## remove unnecessary variables
+```{r}
+part_list <- part_list %>%
+  select(-exclude_age, -exclude_language, -exclude_premature, -exclude_priorStudy)
+```
+
+
+
+
+
+# Save file for next script
+
+```{r}
+export(part_list, file = here("output/processed_data/MainSubjList-lp4.Rdata"))
+```

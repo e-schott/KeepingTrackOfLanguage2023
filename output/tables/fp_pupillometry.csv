@@ -1,0 +1,4 @@
+name,anova_12mo_pupil,anova_18mo_pupil
+trial_type,"F[1, 29] = 0.01, MSE = 0.00, p = .909, eta2p = .000","F[1, 28] = 1.13, MSE = 0.01, p = .297, eta2p = .039"
+lang_group,"F[1, 29] = 0.02, MSE = 0.02, p = .894, eta2p = .001","F[1, 28] = 1.85, MSE = 0.01, p = .184, eta2p = .062"
+lang_group_trial_type,"F[1, 29] = 1.03, MSE = 0.00, p = .317, eta2p = .034","F[1, 28] = 0.01, MSE = 0.01, p = .934, eta2p = .000"

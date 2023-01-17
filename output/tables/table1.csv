@@ -1,0 +1,9 @@
+study,age_group,lang_group,N,min,mean,max,mean_gender,mean_eng
+LP,5,bilingual,19,5,5.5,6,63,53
+LP,5,monolingual,19,4.8,5.7,6.5,42,42
+LP,12,bilingual,24,11.7,12.3,13,54,67
+LP,12,monolingual,22,11.8,12.5,13.3,36,41
+FP,12,bilingual,18,11.8,12.5,13.2,33,67
+FP,12,monolingual,24,11.8,12.6,13.2,42,67
+FP,18,bilingual,21,17.7,18.5,19.2,67,52
+FP,18,monolingual,18,17.8,18.5,19.1,50,56

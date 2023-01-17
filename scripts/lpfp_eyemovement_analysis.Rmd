@@ -1,0 +1,1283 @@
+---
+title: "Eyetracking analysis script"
+
+
+---
+
+# script preparation
+## library() calls
+```{r setup, include=FALSE}
+# devtools::install_github("psyteachr/introdataviz")
+# devtools::install_github("rempsyc/rempsyc")
+
+packages_used <- c(
+  "rmarkdown", "codebook", "labelled", "devtools",
+  "pander", "knitr", "forcats", "beepr",
+  "anytime", "apaTables", "arsenal", "broom", "diffdf", "dplyr", "data.table",
+  "eyetrackingR", "ez", "forcats", "ggbeeswarm", "ggplot2", "glue",
+  "here", "janitor", "lme4", "lubridate", "magrittr",
+  "Matrix", "purrr", "RColorBrewer",
+  "readr", "readxl", "rio", "rlang", "stringr", "tibble",
+  "tidyr", "tidylog", "TOSTER", "zoo"
+)
+for (i in packages_used) {
+  library(i, character.only = T)
+}
+library(papaja)
+library(introdataviz)
+library(rempsyc)
+```
+
+# function
+```{r}
+# helper functions
+# create function to get human readable non-latex code for results
+convert_anova_to_apa_text <- function(input) {
+  latex_result_table <- apa_print(input[["aov"]], in_paren = TRUE, es = "pes")
+  latex_result_list <- latex_result_table$full_result
+  latex_result_list %>%
+    lapply(., function(x) gsub("\\$", "", x)) %>%
+    lapply(., function(x) gsub("\\\\mathit\\{MSE\\}", "MSE", x)) %>%
+    lapply(., function(x) gsub("\\\\hat\\{\\\\eta\\}\\^2_p", "eta2p", x))
+}
+```
+
+
+
+## read littleprince data
+```{r}
+lp_data <- import(file = here("output", "processed_data", "fullData-lp5.Rdata"))
+```
+
+
+## read faceprince data
+```{r pressure, echo=FALSE}
+fp_data <- readRDS(here("output", "processed_data", "fp_preprocessed.Rdata")) %>%
+  mutate(dominant_language = case_when(
+    percent_english > percent_french ~ "English",
+    percent_french > percent_english ~ "French",
+    TRUE ~ "check"
+  ))
+```
+
+
+## merge
+```{r}
+all_data <- full_join(fp_data, lp_data) %>%
+  # shorten the study variable to study initials, keep the old study name as study_incl_age
+  rename(study_incl_age = study) %>%
+  mutate(
+    study = glue("{substr(study_incl_age, 1,1)}P"),
+    study = factor(study, levels = c("LP", "FP"))
+  ) # want LP to always show first
+```
+## add variables
+### direction of  switch variable
+```{r}
+all_data %<>%
+  group_by(part_id) %>%
+  mutate(
+    order_numeric = as.numeric(substr(order, 2, 2)),
+    # which language are the woman and man speaking in fam
+    man_fam = ifelse(order_numeric <= 4, "English", "French"),
+    woman_fam = ifelse(order_numeric <= 4, "French", "English")
+  ) %>%
+  ungroup() %>%
+  mutate( # who speaks the participants dominant language during familiarization?
+    dom_fam = case_when(
+      dominant_language == man_fam ~ "man",
+      dominant_language == woman_fam ~ "woman"
+    ),
+    #    is the person who speaks dominant language in fam speaking? if yes, it is "switch into non-dominant" and vice versa
+
+    # for test, only categorize test trials
+    dom_test = case_when(
+      phase == "familiarization" ~ as.character(NA),
+      dom_fam == speaker_gender ~ "Switch into non-dominant language",
+      dom_fam != speaker_gender ~ "Switch into dominant language"
+    )
+  )
+```
+### create dominant language variable
+```{r}
+all_data %<>%
+  mutate(
+    percent_dominant = case_when(
+      dominant_language == "English" ~ percent_english,
+      dominant_language == "French" ~ percent_french
+    ),
+    percent_nondominant = case_when(
+      dominant_language == "English" ~ percent_french,
+      dominant_language == "French" ~ percent_english
+    )
+  )
+```
+## save csv for reviewers to analyze without R
+```{r}
+all_data %>% write_csv(here("output", "processed_data", "csv_files", "eyemovements_all_data.csv"))
+```
+
+
+
+
+# descriptive stuff
+## excluded participants info
+```{r}
+#
+all_data %>%
+  distinct(part_id, .keep_all = TRUE) %>%
+  group_by(study) %>%
+  count(exclude_summary) %>%
+  pivot_wider(names_from = study, values_from = n, values_fill = 0) %>%
+  adorn_totals()
+```
+###  "not enough data" breakdown by age and language
+```{r}
+all_data %>%
+  distinct(part_id, .keep_all = TRUE) %>%
+  filter(exclude_summary == "5_not_enough_data") %>%
+  group_by(study, age_group, lang_group) %>%
+  count() %>%
+  pivot_wider(values_from = n, names_from = lang_group)
+```
+
+
+
+### recruitment stopped category breakdown by age and language
+```{r}
+# breakdown of recruitment stopped group
+all_data %>%
+  distinct(part_id, .keep_all = TRUE) %>%
+  filter(exclude_summary == "5_recruitment_stopped") %>%
+  group_by(study, age_group, lang_group) %>%
+  count()
+```
+
+
+
+## info about keepers
+Table 1 in paper
+
+xx could be made better by combining min max into a single range column
+```{r}
+table_1 <- all_data %>%
+  filter(exclude_summary == "keeper") %>%
+  distinct(interaction(part_id, study), .keep_all = T) %>%
+  group_by(study, age_group, lang_group) %>%
+  summarize(
+    N = n(),
+    min = round(min(age_in_months, na.rm = T), 1),
+    mean = round(mean(age_in_months, na.rm = T), 1),
+    max = round(max(age_in_months, na.rm = T), 1),
+    mean_gender = as.integer(round(mean(gender == "female", na.rm = T) * 100, 0)),
+    mean_eng = as.integer(round(mean(dominant_language == "English") * 100, 0)) # this assumes there is no NA!
+  ) %>%
+  ungroup()
+
+table_1 %>%
+  write_csv(here("output", "tables", "table1.csv"))
+```
+
+## language exposure
+```{r}
+desc_language <- all_data %>%
+  filter(exclude_summary == "keeper") %>%
+  distinct(interaction(part_id, study), .keep_all = T) %>%
+  group_by(study, lang_group) %>%
+  summarise_at(vars(percent_dominant, percent_nondominant),
+    list(mean = mean, min = min, max = max),
+    na.rm = T
+  ) %>%
+  mutate(across(ends_with("mean"), round)) %>%
+  relocate(contains("nondominant"), .after = percent_dominant_max)
+```
+
+## exposure to third language and language mixing scores(bilinguals only)
+```{r}
+all_data %>%
+  filter(exclude_summary == "keeper", lang_group == "bilingual", percent_other > 0) %>%
+  distinct(part_id, .keep_all = T) %>%
+  group_by(study, .drop = F) %>%
+  summarize(
+    n = n(),
+    min = min(percent_other),
+    max = max(percent_other),
+    mean = mean(percent_other)
+  )
+
+
+
+all_data %>%
+  filter(exclude_summary == "keeper", lang_group == "bilingual") %>%
+  distinct(part_id, .keep_all = T) %>%
+  group_by(study, .drop = F) %>%
+  summarize(
+    mean_mixing = mean(lang_mix, na.rm = T),
+    range = range(lang_mix, na.rm = T),
+    n_missing = sum(is.na(lang_mix))
+  )
+```
+
+
+
+## ethnicity and maternal education
+```{r}
+# ethnicity LP
+all_data %>%
+  filter(exclude_summary == "keeper", study == "LP") %>%
+  distinct(part_id, .keep_all = T) %>%
+  tabyl(child_ethnicity) %>%
+  mutate(percent = round(percent, 2) * 100) %>%
+  arrange(-n)
+# ethnicity FP
+all_data %>%
+  filter(exclude_summary == "keeper", study == "FP") %>%
+  distinct(part_id, .keep_all = T) %>%
+  tabyl(child_ethnicity) %>%
+  mutate(percent = round(percent, 2) * 100) %>%
+  arrange(-n)
+
+# education
+all_data %>%
+  filter(exclude_summary == "keeper") %>%
+  distinct(part_id, .keep_all = T) %>%
+  group_by(study) %>%
+  summarize(mean = round(mean(years_education, na.rm = T), 1))
+```
+
+## average number of trials
+```{r}
+all_data %>%
+  filter(exclude_summary == "keeper", exclude != 1) %>%
+  group_by(study, age_group, part_id) %>%
+  summarize(N_trials = mean(n_distinct(trial_number))) %>%
+  group_by(study, age_group) %>%
+  summarize(mean_trials = round(mean(N_trials), 1))
+```
+
+## change in looking to familiarization over trials
+```{r}
+keeper_data_all_trials <- all_data %>%
+  filter(exclude_summary == "keeper") %>%
+  make_eyetrackingr_data(
+    participant_column = "part_id",
+    trial_column = "trial_number",
+    time_column = "timestamp",
+    trackloss_column = "track_loss",
+    aoi_columns = c("full_screen"),
+    treat_non_aoi_looks_as_missing = FALSE
+  )
+
+
+response_window_agg_by_sub_all_trials <- make_time_window_data(keeper_data_all_trials,
+  aois = "full_screen",
+  predictor_columns = c("study", "lang_group", "age_group", "trial_type", "trial_number", "percent_dominant", "lang_mix"),
+  summarize_by = "part_id"
+) %>%
+  group_by(part_id, study, lang_group, age_group, percent_dominant, lang_mix, trial_type, trial_number) %>%
+  summarize(mean_LT = mean(SamplesInAOI / 60, na.rm = T))
+
+
+trial_change_summary <- response_window_agg_by_sub_all_trials %>%
+  mutate(trial_number = as.numeric(trial_number)) %>%
+  group_by(study, trial_number) %>%
+  summarize(
+    mean = round(mean(mean_LT, na.rm = T), 1),
+    sd = round(sd(mean_LT, na.rm = T), 1)
+  )
+
+
+trial_change_summary %>%
+  pivot_wider(names_from = study, values_from = c(mean, sd)) %>%
+  relocate(sd_LP, .after = mean_LP) %>%
+  rename(
+    Study1_mean = mean_LP,
+    Study1_SD = sd_LP,
+    Study2_mean = mean_FP,
+    Study2_SD = sd_FP
+  ) %>%
+  View()
+
+t_test_data <- response_window_agg_by_sub_all_trials %>%
+  filter(as.numeric(trial_number) < 9) %>%
+  group_by(part_id) %>%
+  slice(c(1, n())) %>%
+  mutate(fam_trial = factor(case_when(
+    trial_number %in% c(1, 2) ~ "first",
+    trial_number %in% c(6, 7, 8) ~ "last"
+  )))
+
+# calculate cohen's d
+t_test_data %>%
+  group_by(study, fam_trial) %>%
+  summarize(
+    mean = round(mean(mean_LT, na.rm = T), 1),
+    sd = round(sd(mean_LT, na.rm = T), 1)
+  ) %>%
+  pivot_wider(names_from = fam_trial, values_from = c(mean, sd)) %>%
+  group_by(study) %>%
+  mutate(cohen_d = round((mean_first - mean_last) / ((sd_first + sd_last) / 2), 2))
+
+# little prince (study 1) t-test
+t_test_data %>%
+  filter(study == "LP") %>%
+  t.test(mean_LT ~ fam_trial, data = ., paired = T, idvar = "part_id")
+
+# faceprince (study 2) t-test
+t_test_data %>%
+  filter(study == "FP") %>%
+  t.test(mean_LT ~ fam_trial, data = ., paired = T, idvar = "part_id")
+```
+```
+
+
+
+
+# prep eyetracking analysis
+```{r}
+keeper_data <- all_data %>%
+  filter(exclude_summary == "keeper") %>%
+  filter(phase == "test") %>%
+  make_eyetrackingr_data(
+    participant_column = "part_id",
+    trial_column = "trial_number",
+    time_column = "timestamp",
+    trackloss_column = "track_loss",
+    aoi_columns = c("full_screen"),
+    treat_non_aoi_looks_as_missing = FALSE
+  )
+
+
+response_window_agg_by_sub <- make_time_window_data(keeper_data,
+  aois = "full_screen",
+  predictor_columns = c("study", "lang_group", "age_group", "trial_type", "trial_number", "percent_dominant", "lang_mix"),
+  summarize_by = "part_id"
+) %>%
+  group_by(part_id, study, lang_group, age_group, percent_dominant, lang_mix, trial_type) %>%
+  summarize(mean_LT = mean(SamplesInAOI / 60, na.rm = T))
+
+
+response_window_agg_by_sub %>%
+  distinct(part_id, .keep_all = TRUE) %>%
+  group_by(study, age_group, lang_group) %>%
+  count() %>%
+  pivot_wider(names_from = lang_group, values_from = n) %>%
+  arrange(desc(study))
+```
+
+## wide df with differential looking time 
+```{r}
+response_window_wide <- response_window_agg_by_sub %>%
+  select(part_id, study, lang_group, age_group, trial_type, percent_dominant, mean_LT) %>%
+  pivot_wider(names_from = trial_type, values_from = mean_LT) %>%
+  mutate(diff_LT = switch - same)
+```
+
+
+
+## log transformation
+```{r}
+# take a quick peek at data
+response_window_agg_by_sub %>% ggplot(., aes(x = study, y = mean_LT)) +
+  geom_violin()
+
+response_window_agg_by_sub %<>%
+  mutate(mean_LT_log = log(mean_LT))
+
+
+# log-transformed data
+response_window_agg_by_sub %>% ggplot(., aes(x = study, y = mean_LT_log)) +
+  geom_violin()
+```
+
+
+
+## calculate mean looking times & effect sizes
+```{r}
+table_1 <- response_window_agg_by_sub %>%
+  group_by(study, age_group, lang_group, trial_type) %>%
+  summarize(
+    mean = mean(mean_LT),
+    SD = sd(mean_LT)
+  ) %>%
+  pivot_wider(values_from = c(mean, SD), names_from = trial_type) %>%
+  mutate(cohen_d = (mean_switch - mean_same) / ((SD_same + SD_switch) / 2)) %>%
+  mutate(across(mean_same:cohen_d, round, 2)) %>%
+  relocate(SD_same, .before = mean_switch)
+
+table_1 %>%
+  mutate(
+    age_group = case_when(
+      age_group == 5 ~ "5-month-olds",
+      age_group == 12 ~ "12-month-olds",
+      age_group == 18 ~ "18-month-olds"
+    ),
+    lang_group = case_when(
+      lang_group == "bilingual" ~ "Bilinguals",
+      lang_group == "monolingual" ~ "Monolinguals"
+    ),
+    study = case_when(
+      study == "LP" ~ "Study 1",
+      study == "FP" ~ "Study 2"
+    )
+  ) %>%
+  nice_table() %>%
+  save_as_docx(., path = here("output", "tables", "means_table.docx"))
+```
+
+
+
+### looking times for biling vs monoling
+```{r}
+# bilinguals vs monolinguals
+response_window_agg_by_sub %>%
+  group_by(study, age_group, lang_group) %>%
+  summarize(
+    mean = mean(mean_LT),
+    SD = sd(mean_LT)
+  ) %>%
+  pivot_wider(values_from = c(mean, SD), names_from = lang_group) %>%
+  mutate(cohen_d = (mean_bilingual - mean_monolingual) / ((SD_bilingual + SD_monolingual) / 2)) %>%
+  mutate(across(mean_bilingual:cohen_d, round, 2)) %>%
+  select(-starts_with("SD"))
+```
+
+
+### total looking time across trial types
+
+```{r}
+response_window_agg_by_sub %>%
+  group_by(study, age_group) %>%
+  summarize(mean_LT = round(mean(mean_LT), 2))
+```
+
+
+# Main analyses
+
+
+
+## nhst looking times
+
+
+### save csv for reviewers to analyze without R
+```{r}
+response_window_agg_by_sub %>% write_csv(here("output", "processed_data", "csv_files", "eyemovements_anova.csv"))
+```
+
+### descriptive tables of measn
+```{r}
+```
+
+
+### run anova on logtransformed data
+```{r}
+anova_LP_5mo <- response_window_agg_by_sub %>%
+  filter(age_group == 5, study == "LP") %>%
+  ezANOVA(
+    dv = mean_LT_log,
+    wid = part_id,
+    within = trial_type,
+    between = lang_group,
+    return_aov = TRUE
+  )
+anova_LP_12mo <- response_window_agg_by_sub %>%
+  filter(age_group == 12, study == "LP") %>%
+  ezANOVA(
+    dv = mean_LT_log,
+    wid = part_id,
+    within = trial_type,
+    between = lang_group,
+    return_aov = TRUE
+  )
+anova_FP_12mo <- response_window_agg_by_sub %>%
+  filter(age_group == 12, study == "FP") %>%
+  ezANOVA(
+    dv = mean_LT_log,
+    wid = part_id,
+    within = trial_type,
+    between = lang_group,
+    return_aov = TRUE
+  )
+
+anova_FP_18mo <- response_window_agg_by_sub %>%
+  filter(age_group == 18, study == "FP") %>%
+  ezANOVA(
+    dv = mean_LT_log,
+    wid = part_id,
+    within = trial_type,
+    between = lang_group,
+    return_aov = TRUE
+  )
+
+
+
+# convert to suitable in-text output
+anova_LP_5mo_text <- convert_anova_to_apa_text(anova_LP_5mo)
+anova_LP_12mo_text <- convert_anova_to_apa_text(anova_LP_12mo)
+anova_FP_12mo_text <- convert_anova_to_apa_text(anova_FP_12mo)
+anova_FP_18mo_text <- convert_anova_to_apa_text(anova_FP_18mo)
+```
+### robustness analysis: anova
+done on untransformed looking times to see if same pattern of results holds up
+```{r}
+anova_LP_5mo_robust <- response_window_agg_by_sub %>%
+  filter(age_group == 5, study == "LP") %>%
+  ezANOVA(
+    dv = mean_LT,
+    wid = part_id,
+    within = trial_type,
+    between = lang_group,
+    return_aov = TRUE
+  )
+anova_LP_12mo_robust <- response_window_agg_by_sub %>%
+  filter(age_group == 12, study == "LP") %>%
+  ezANOVA(
+    dv = mean_LT,
+    wid = part_id,
+    within = trial_type,
+    between = lang_group,
+    return_aov = TRUE
+  )
+anova_FP_12mo_robust <- response_window_agg_by_sub %>%
+  filter(age_group == 12, study == "FP") %>%
+  ezANOVA(
+    dv = mean_LT,
+    wid = part_id,
+    within = trial_type,
+    between = lang_group,
+    return_aov = TRUE
+  )
+
+anova_FP_18mo_robust <- response_window_agg_by_sub %>%
+  filter(age_group == 18, study == "FP") %>%
+  ezANOVA(
+    dv = mean_LT,
+    wid = part_id,
+    within = trial_type,
+    between = lang_group,
+    return_aov = TRUE
+  )
+
+
+
+# convert to suitable in-text output
+anova_LP_5mo_text_robust <- convert_anova_to_apa_text(anova_LP_5mo_robust)
+anova_LP_12mo_text_robust <- convert_anova_to_apa_text(anova_LP_12mo_robust)
+anova_FP_12mo_text_robust <- convert_anova_to_apa_text(anova_FP_12mo_robust)
+anova_FP_18mo_text_robust <- convert_anova_to_apa_text(anova_FP_18mo_robust)
+```
+### results of log-transformed and untransformed ANOVAs
+```{r}
+aov_LP_05mo <- full_join(
+  enframe(anova_LP_5mo_text, value = "text") %>% unnest(cols = c(text)),
+  enframe(anova_LP_5mo_text_robust, value = "robust") %>% unnest(cols = c(robust))
+) %>%
+  mutate(sort = nchar(name), group = "lp5mo") %>%
+  arrange(sort, desc(name))
+
+aov_LP_12mo <- full_join(
+  enframe(anova_LP_12mo_text, value = "text") %>% unnest(cols = c(text)),
+  enframe(anova_LP_12mo_text_robust, value = "robust") %>% unnest(cols = c(robust))
+) %>%
+  mutate(sort = nchar(name), group = "lp12mo") %>%
+  arrange(sort, desc(name))
+
+aov_FP_12mo <- full_join(
+  enframe(anova_FP_12mo_text, value = "text") %>% unnest(cols = c(text)),
+  enframe(anova_FP_12mo_text_robust, value = "robust") %>% unnest(cols = c(robust))
+) %>%
+  mutate(sort = nchar(name), group = "fp12mo") %>%
+  arrange(sort, desc(name))
+
+aov_FP_18mo <- full_join(
+  enframe(anova_FP_18mo_text, value = "text") %>% unnest(cols = c(text)),
+  enframe(anova_FP_18mo_text_robust, value = "robust") %>% unnest(cols = c(robust))
+) %>%
+  mutate(sort = nchar(name), group = "fp18mo") %>%
+  arrange(sort, desc(name))
+
+all <- rbind(aov_LP_05mo, aov_LP_12mo, aov_FP_12mo, aov_FP_18mo) %>% as_tibble()
+
+all %>% write_csv(here("output", "tables", "looking_time_nhst_results.csv"))
+```
+
+
+
+## equivalence tests
+```{r}
+# smallest effect size of interest
+expected_min_effect_size <- 0.5118
+verbose_var <- FALSE
+
+# convert response df to wide to make calculation easier
+response_window_wide_log <- response_window_agg_by_sub %>%
+  select(part_id, study, lang_group, lang_mix, age_group, trial_type, percent_dominant, mean_LT_log) %>%
+  pivot_wider(names_from = trial_type, values_from = mean_LT_log)
+
+# this preps the data for use with purr::map and tost
+# summarize by study and age group
+tost_df_study <- response_window_wide_log %>%
+  group_by(study, age_group) %>%
+  summarize(
+    N = n(),
+    mean.1 = mean(same),
+    mean.2 = mean(switch),
+    sd.1 = sd(same),
+    sd.2 = sd(switch),
+    corr = cor(same, switch)
+  ) %>%
+  ungroup()
+
+
+TOST_results <- tost_df_study %>%
+  # separate the data by Study and language background
+  nest(-study, -age_group) %>%
+  # compute equivalence test
+  mutate(results_of_equ_test = purrr::map(
+    data,
+    ~ TOSTpaired(
+      n = .$N,
+      m1 = .$mean.1,
+      m2 = .$mean.2,
+      sd1 = .$sd.1,
+      sd2 = .$sd.2,
+      r12 = .$corr,
+      high_eqbound = expected_min_effect_size,
+      low_eqbound = -expected_min_effect_size,
+      verbose = verbose_var
+    )
+  )) %>%
+  # convert results to tibble
+  mutate(tidied = purrr::map(results_of_equ_test, as_tibble)) %>%
+  # make results easier to view
+  unnest(tidied, .drop = TRUE) %>%
+  group_by(study, age_group) %>%
+  mutate(
+    max_t = ifelse(abs(TOST_t1) < abs(TOST_t2), TOST_t1, TOST_t2),
+    max_p = max(TOST_p1, TOST_p2),
+    full_result = ifelse(round(max_t, 2) == 0,
+      sprintf("t[%d] = %.2f, p = %.3f", TOST_df, max_t, max_p),
+      sprintf("t[%d] = %.2f, p = %.3f", TOST_df, max_t, max_p) # same result for if and else?
+    )
+  ) %>%
+  ungroup()
+```
+
+### robustness analysis: untransformed equivalence tests
+```{r}
+# this preps the data for use with purr::map and tost
+# summarize by study and age group
+tost_df_study_untransformed <- response_window_wide %>%
+  group_by(study, age_group) %>%
+  summarize(
+    N = n(),
+    mean.1 = mean(same),
+    mean.2 = mean(switch),
+    sd.1 = sd(same),
+    sd.2 = sd(switch),
+    corr = cor(same, switch)
+  ) %>%
+  ungroup()
+
+
+TOST_results_untransformed <- tost_df_study_untransformed %>%
+  # separate the data by Study and language background
+  nest(-study, -age_group) %>%
+  # compute equivalence test
+  mutate(results_of_equ_test = purrr::map(
+    data,
+    ~ TOSTpaired(
+      n = .$N,
+      m1 = .$mean.1,
+      m2 = .$mean.2,
+      sd1 = .$sd.1,
+      sd2 = .$sd.2,
+      r12 = .$corr,
+      high_eqbound = expected_min_effect_size,
+      low_eqbound = -expected_min_effect_size,
+      verbose = verbose_var
+    )
+  )) %>%
+  # convert results to tibble
+  mutate(tidied = purrr::map(results_of_equ_test, as_tibble)) %>%
+  # make results easier to view
+  unnest(tidied, .drop = TRUE) %>%
+  group_by(study, age_group) %>%
+  mutate(
+    max_t = ifelse(abs(TOST_t1) < abs(TOST_t2), TOST_t1, TOST_t2),
+    max_p = max(TOST_p1, TOST_p2),
+    full_result = ifelse(round(max_t, 2) == 0,
+      sprintf("t[%d] = %.2f, p = %.3f", TOST_df, max_t, max_p),
+      sprintf("t[%d] = %.2f, p = %.3f", TOST_df, max_t, max_p) # No difference between if/else result
+    )
+  ) %>%
+  ungroup()
+```
+
+
+
+
+### visualizations
+```{r}
+# plot with images to better understand tests
+
+tost_df_study %>%
+  slice(1) %>%
+  glue_data("Study {study} - {age_group}-month-olds")
+with(
+  tost_df_study %>% slice(1),
+  TOSTpaired(
+    n = N, m1 = mean.1, m2 = mean.2, sd1 = sd.1, sd2 = sd.2,
+    r12 = corr,
+    high_eqbound_dz = expected_min_effect_size,
+    low_eqbound_dz = -expected_min_effect_size,
+    verbose = verbose_var
+  )
+)
+tost_df_study %>%
+  slice(2) %>%
+  glue_data("Study {study} - {age_group}-month-olds")
+with(
+  tost_df_study %>% slice(2),
+  TOSTpaired(
+    n = N, m1 = mean.1, m2 = mean.2, sd1 = sd.1, sd2 = sd.2,
+    r12 = corr,
+    high_eqbound_dz = expected_min_effect_size,
+    low_eqbound_dz = -expected_min_effect_size,
+    verbose = verbose_var
+  )
+)
+tost_df_study %>%
+  slice(3) %>%
+  glue_data("Study {study} - {age_group}-month-olds")
+with(
+  tost_df_study %>% slice(3),
+  TOSTpaired(
+    n = N, m1 = mean.1, m2 = mean.2, sd1 = sd.1, sd2 = sd.2,
+    r12 = corr,
+    high_eqbound_dz = expected_min_effect_size,
+    low_eqbound_dz = -expected_min_effect_size,
+    verbose = verbose_var
+  )
+)
+tost_df_study %>%
+  slice(4) %>%
+  glue_data("Study {study} - {age_group}-month-olds")
+with(
+  tost_df_study %>% slice(4),
+  TOSTpaired(
+    n = N, m1 = mean.1, m2 = mean.2, sd1 = sd.1, sd2 = sd.2,
+    r12 = corr,
+    high_eqbound_dz = expected_min_effect_size,
+    low_eqbound_dz = -expected_min_effect_size,
+    verbose = verbose_var
+  )
+)
+```
+### comparison
+```{r}
+eq_tests <- tibble(TOST_results$study, TOST_results$age_group,
+  log_transformed = TOST_results$full_result,
+  untransformed = TOST_results_untransformed$full_result
+) %>% rename(study = `TOST_results$study`, age_group = `TOST_results$age_group`)
+eq_tests
+```
+
+
+## PLOT split violin plot
+
+```{r}
+ggplot(
+  response_window_wide,
+  aes(
+    x = factor(age_group),
+    y = diff_LT,
+    fill = lang_group
+  )
+) +
+  geom_hline(aes(yintercept = 0), colour = "darkgrey") +
+  introdataviz::geom_split_violin(alpha = .4, trim = FALSE) +
+  geom_boxplot(width = .2, alpha = .6, fatten = NULL, show.legend = FALSE) +
+  stat_summary(
+    fun.data = "mean_se", geom = "pointrange", show.legend = F,
+    position = position_dodge(.175)
+  ) +
+  facet_wrap(vars(study),
+    scales = "free_x",
+    labeller = labeller(study = c(
+      "LP" = "Auditory-Only",
+      "FP" = "Audiovisual"
+    ))
+  ) +
+  scale_x_discrete(name = "Age Group (in months)") +
+  scale_y_continuous(name = "Difference in s (Switch-Same)") +
+  scale_fill_brewer(palette = "Set1", name = "Language Group") +
+  theme_apa() +
+  theme(text = element_text(size = 20), legend.position = "right")
+ggsave(here("output", "figures", "LPFP_paper.png"), width = 12, height = 6)
+```
+
+
+# exploratory analysis
+## correlation between diff LT and % dominant
+### log-transformed looking time
+```{r}
+response_window_wide_log %<>%
+  mutate(diff_LT = switch - same)
+
+# LP 5-month-olds
+cor_LP_5_lang_dom <- with(
+  response_window_wide_log %>%
+    filter(study == "LP", age_group == 5),
+  cor.test(
+    diff_LT,
+    percent_dominant
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# LP 12-month-olds
+cor_LP_12_lang_dom <- with(
+  response_window_wide_log %>%
+    filter(study == "LP", age_group == 12),
+  cor.test(
+    diff_LT,
+    percent_dominant
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# FP 12-month-olds
+cor_FP_12_lang_dom <- with(
+  response_window_wide_log %>%
+    filter(study == "FP", age_group == 12),
+  cor.test(
+    diff_LT,
+    percent_dominant
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# FP 18-month-olds
+cor_FP_18_lang_dom <- with(
+  response_window_wide_log %>%
+    filter(study == "FP", age_group == 18),
+  cor.test(
+    diff_LT,
+    percent_dominant
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+ggplot(response_window_wide, aes(percent_dominant, diff_LT, colour = factor(age_group))) +
+  geom_smooth(method = "lm") +
+  geom_point() +
+  facet_grid(cols = vars(study))
+# corr_lang_dom  =  tibble(study= c(1,2), report_latex = c(cor_study_1_lang_dom$full_result, cor_study_2_lang_dom$full_result)) %>%
+# get rid of latex formatting
+#  mutate(report_word = convert_anova_to_apa_text(report_latex))
+```
+
+### robustness analysis: untransformed LT
+```{r}
+# LP 5-month-olds
+cor_LP_5_lang_dom_untransformed <- with(
+  response_window_wide %>%
+    filter(study == "LP", age_group == 5),
+  cor.test(
+    diff_LT,
+    percent_dominant
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# LP 12-month-olds
+cor_LP_12_lang_dom_untransformed <- with(
+  response_window_wide %>%
+    filter(study == "LP", age_group == 12),
+  cor.test(
+    diff_LT,
+    percent_dominant
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# FP 12-month-olds
+cor_FP_12_lang_dom_untransformed <- with(
+  response_window_wide %>%
+    filter(study == "FP", age_group == 12),
+  cor.test(
+    diff_LT,
+    percent_dominant
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# FP 18-month-olds
+cor_FP_18_lang_dom_untransformed <- with(
+  response_window_wide %>%
+    filter(study == "FP", age_group == 18),
+  cor.test(
+    diff_LT,
+    percent_dominant
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+```
+### results
+pattern of results the same with and without logtransformation
+```{r}
+correlation_dominant_language <- tibble(
+  analysis = c("log_transformed", "untransformed"),
+  lp_5mo = c(
+    cor_LP_5_lang_dom$full_result,
+    cor_LP_5_lang_dom_untransformed$full_result
+  ),
+  lp_12mo = c(
+    cor_LP_12_lang_dom$full_result,
+    cor_LP_12_lang_dom_untransformed$full_result
+  ),
+  fp_12mo = c(
+    cor_FP_12_lang_dom$full_result,
+    cor_FP_12_lang_dom_untransformed$full_result
+  ),
+  fp_18mo = c(
+    cor_FP_18_lang_dom$full_result,
+    cor_FP_18_lang_dom_untransformed$full_result
+  )
+)
+correlation_dominant_language %<>% pivot_longer(!analysis, names_to = "analysis_type", values_to = "result") %>% pivot_wider(names_from = analysis, values_from = result)
+correlation_dominant_language <- correlation_dominant_language %>%
+  mutate(log_transformed = gsub("\\$|\\\\", "", log_transformed)) %>%
+  mutate(untransformed = gsub("\\$|\\\\", "", untransformed))
+```
+## correlation with language mixing scale
+### log-transformed
+```{r}
+response_window_wide_log %>%
+  filter(lang_group == "bilingual") %>%
+  group_by(study, age_group) %>%
+  summarize(n_distinct(part_id))
+# LP 5-month-olds
+cor_LP_5_lang_mix <- with(
+  response_window_wide_log %>%
+    filter(study == "LP", age_group == 5, lang_group == "bilingual"),
+  cor.test(
+    diff_LT,
+    lang_mix
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# LP 12-month-olds
+cor_LP_12_lang_mix <- with(
+  response_window_wide_log %>%
+    filter(study == "LP", age_group == 12, lang_group == "bilingual"),
+  cor.test(
+    diff_LT,
+    lang_mix
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# FP 12-month-olds
+cor_FP_12_lang_mix <- with(
+  response_window_wide_log %>%
+    filter(study == "FP", age_group == 12, lang_group == "bilingual"),
+  cor.test(
+    diff_LT,
+    lang_mix
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# FP 18-month-olds
+cor_FP_18_lang_mix <- with(
+  response_window_wide_log %>%
+    filter(study == "FP", age_group == 18, lang_group == "bilingual"),
+  cor.test(
+    diff_LT,
+    lang_mix
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+ggplot(response_window_wide, aes(lang_mix, diff_LT, colour = factor(age_group))) +
+  geom_smooth(method = "lm") +
+  geom_point() +
+  facet_grid(cols = vars(study))
+```
+
+### robustness: untransformed
+```{r}
+# LP 5-month-olds
+cor_LP_5_lang_mix_untrans <- with(
+  response_window_wide %>%
+    filter(study == "LP", age_group == 5, lang_group == "bilingual"),
+  cor.test(
+    diff_LT,
+    lang_mix
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# LP 12-month-olds
+cor_LP_12_lang_mix_untrans <- with(
+  response_window_wide %>%
+    filter(study == "LP", age_group == 12, lang_group == "bilingual"),
+  cor.test(
+    diff_LT,
+    lang_mix
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# FP 12-month-olds
+cor_FP_12_lang_mix_untrans <- with(
+  response_window_wide %>%
+    filter(study == "FP", age_group == 12, lang_group == "bilingual"),
+  cor.test(
+    diff_LT,
+    lang_mix
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+
+# FP 18-month-olds
+cor_FP_18_lang_mix_untrans <- with(
+  response_window_wide %>%
+    filter(study == "FP", age_group == 18, lang_group == "bilingual"),
+  cor.test(
+    diff_LT,
+    lang_mix
+  )
+) %>%
+  apa_print(in_paren = TRUE)
+```
+
+### comparison
+pattern of results the same with and without logtransformation
+```{r}
+correlation_lang_mix <- tibble(
+  analysis = c("log_transformed", "untransformed"),
+  lp_5mo = c(
+    cor_LP_5_lang_mix$full_result,
+    cor_LP_5_lang_mix_untrans$full_result
+  ),
+  lp_12mo = c(
+    cor_LP_12_lang_mix$full_result,
+    cor_LP_12_lang_mix_untrans$full_result
+  ),
+  fp_12mo = c(
+    cor_FP_12_lang_mix$full_result,
+    cor_FP_12_lang_mix_untrans$full_result
+  ),
+  fp_18mo = c(
+    cor_FP_18_lang_mix$full_result,
+    cor_FP_18_lang_mix_untrans$full_result
+  )
+)
+correlation_lang_mix %<>%
+  pivot_longer(!analysis, names_to = "analysis_type", values_to = "result") %>% pivot_wider(names_from = analysis, values_from = result)
+correlation_lang_mix <- correlation_lang_mix %>%
+  mutate(log_transformed = gsub("\\$|\\\\", "", log_transformed)) %>%
+  mutate(untransformed = gsub("\\$|\\\\", "", untransformed))
+```
+
+## difference by direction of switch
+### prep data
+get difference in looking time for same and switch trial separately for the speaker who switched into dominant language and out of dominant language. then do an anova with only those who have all four test trials. 
+```{r}
+response_window_agg_by_sub_dominance <- make_time_window_data(keeper_data,
+  aois = "full_screen",
+  predictor_columns = c("study", "lang_group", "age_group", "percent_dominant", "trial_type", "trial_number", "dom_test"),
+  summarize_by = "part_id"
+) %>%
+  group_by(part_id) %>%
+  mutate(N_test = n()) %>%
+  ungroup() %>%
+  # keep only participants with data on all four trials
+  filter(N_test == 4) %>%
+  clean_names() %>%
+  mutate(
+    looking_time = samples_in_aoi / 60,
+    log_looking = log(looking_time),
+    # log(0) is minus infinity, so in this case use very very very small number
+    log_looking = ifelse(looking_time == 0, log(0.0000001), log_looking)
+  )
+
+
+response_window_agg_by_sub_dominance_log <- response_window_agg_by_sub_dominance %>%
+  select(part_id:trial_type, dom_test, log_looking) %>%
+  pivot_wider(names_from = c(trial_type), values_from = log_looking) %>%
+  mutate(diff_LT = switch - same)
+```
+### how many participants in this analysis?
+```{r}
+response_window_agg_by_sub_dominance_log %>%
+  distinct(part_id, .keep_all = T) %>%
+  group_by(study, age_group, lang_group) %>%
+  count() %>%
+  pivot_wider(names_from = lang_group, values_from = n)
+```
+### calculate anova
+```{r}
+anova_switch_LP_5mo <- response_window_agg_by_sub_dominance_log %>%
+  filter(age_group == 5, study == "LP") %>%
+  ezANOVA(
+    dv = diff_LT,
+    wid = part_id,
+    within = dom_test,
+    between = lang_group,
+    return_aov = TRUE
+  )
+
+anova_switch_LP_12mo <- response_window_agg_by_sub_dominance_log %>%
+  filter(age_group == 12, study == "LP") %>%
+  ezANOVA(
+    dv = diff_LT,
+    wid = part_id,
+    within = dom_test,
+    between = lang_group,
+    return_aov = TRUE
+  )
+anova_switch_FP_12mo <- response_window_agg_by_sub_dominance_log %>%
+  filter(age_group == 12, study == "FP") %>%
+  ezANOVA(
+    dv = diff_LT,
+    wid = part_id,
+    within = dom_test,
+    between = lang_group,
+    return_aov = TRUE
+  )
+
+anova_switch_FP_18mo <- response_window_agg_by_sub_dominance_log %>%
+  filter(age_group == 18, study == "FP") %>%
+  ezANOVA(
+    dv = diff_LT,
+    wid = part_id,
+    within = dom_test,
+    between = lang_group,
+    return_aov = TRUE
+  )
+
+# convert to suitable in-text output
+anova_switch_LP_5mo_text <- convert_anova_to_apa_text(anova_switch_LP_5mo)
+anova_switch_LP_12mo_text <- convert_anova_to_apa_text(anova_switch_LP_12mo)
+anova_switch_FP_12mo_text <- convert_anova_to_apa_text(anova_switch_FP_12mo)
+anova_switch_FP_18mo_text <- convert_anova_to_apa_text(anova_switch_FP_18mo)
+```
+### robustness test
+```{r}
+response_window_agg_by_sub_dominance_wide <- response_window_agg_by_sub_dominance %>%
+  select(part_id:trial_type, dom_test, looking_time) %>%
+  pivot_wider(names_from = c(trial_type), values_from = looking_time) %>%
+  mutate(diff_LT = switch - same)
+
+anova_switch_LP_5mo_robust <- response_window_agg_by_sub_dominance_wide %>%
+  filter(age_group == 5, study == "LP") %>%
+  ezANOVA(
+    dv = diff_LT,
+    wid = part_id,
+    within = dom_test,
+    between = lang_group,
+    return_aov = TRUE
+  )
+
+anova_switch_LP_12mo_robust <- response_window_agg_by_sub_dominance_wide %>%
+  filter(age_group == 12, study == "LP") %>%
+  ezANOVA(
+    dv = diff_LT,
+    wid = part_id,
+    within = dom_test,
+    between = lang_group,
+    return_aov = TRUE
+  )
+anova_switch_FP_12mo_robust <- response_window_agg_by_sub_dominance_wide %>%
+  filter(age_group == 12, study == "FP") %>%
+  ezANOVA(
+    dv = diff_LT,
+    wid = part_id,
+    within = dom_test,
+    between = lang_group,
+    return_aov = TRUE
+  )
+
+anova_switch_FP_18mo_robust <- response_window_agg_by_sub_dominance_wide %>%
+  filter(age_group == 18, study == "FP") %>%
+  ezANOVA(
+    dv = diff_LT,
+    wid = part_id,
+    within = dom_test,
+    between = lang_group,
+    return_aov = TRUE
+  )
+
+# convert to suitable in-text output
+anova_switch_LP_5mo_text_robust <- convert_anova_to_apa_text(anova_switch_LP_5mo_robust)
+anova_switch_LP_12mo_text_robust <- convert_anova_to_apa_text(anova_switch_LP_12mo_robust)
+anova_switch_FP_12mo_text_robust <- convert_anova_to_apa_text(anova_switch_FP_12mo_robust)
+anova_switch_FP_18mo_text_robust <- convert_anova_to_apa_text(anova_switch_FP_18mo_robust)
+```
+### results
+```{r}
+aov_LP_05mo_switch <- full_join(
+  enframe(anova_switch_LP_5mo_text) %>% unnest(cols = c(value)) %>% rename(trans = value),
+  enframe(anova_switch_LP_5mo_text_robust) %>% unnest(cols = c(value)) %>% rename(untrans = value)
+) %>%
+  mutate(sorting_variable = nchar(name), group = "LP_05mo") %>%
+  arrange(sorting_variable)
+
+aov_LP_12mo_switch <- full_join(
+  enframe(anova_switch_LP_12mo_text) %>% unnest(cols = c(value)) %>% rename(trans = value),
+  enframe(anova_switch_LP_12mo_text_robust) %>% unnest(cols = c(value)) %>% rename(untrans = value)
+) %>%
+  mutate(sorting_variable = nchar(name), group = "LP_12mo") %>%
+  arrange(sorting_variable)
+
+aov_FP_12mo_switch <- full_join(
+  enframe(anova_switch_FP_12mo_text) %>% unnest(cols = c(value)) %>% rename(trans = value),
+  enframe(anova_switch_FP_12mo_text_robust) %>% unnest(cols = c(value)) %>% rename(untrans = value)
+) %>%
+  mutate(sorting_variable = nchar(name), group = "FP_12mo") %>%
+  arrange(sorting_variable)
+
+aov_FP_18mo_switch <- full_join(
+  enframe(anova_switch_FP_18mo_text) %>% unnest(cols = c(value)) %>% rename(trans = value),
+  enframe(anova_switch_FP_18mo_text_robust) %>% unnest(cols = c(value)) %>% rename(untrans = value)
+) %>%
+  mutate(sorting_variable = nchar(name), group = "FP_18mo") %>%
+  arrange(sorting_variable)
+
+
+combined_switch_anova_results <- rbind(aov_LP_05mo_switch, aov_LP_12mo_switch, aov_FP_12mo_switch, aov_FP_18mo_switch) %>% as_tibble()
+```
+
+
+
+
+
+
+
+
+
+### plot interaction with direction of switch 
+```{r}
+response_window_agg_by_sub_dominance_wide %>%
+  ggplot(., aes(x = lang_group, y = diff_LT, fill = dom_test)) +
+  geom_hline(yintercept = 0, alpha = .3, size = .1) +
+  geom_boxplot(width = .8, alpha = .7, fatten = NULL) +
+  stat_summary(
+    fun.data = "mean_se", geom = "pointrange", show.legend = F,
+    position = position_dodge(.8)
+  ) +
+  facet_wrap(vars(study, age_group),
+    ncol = 4,
+    labeller = labeller(age_group = c("5" = "5-month-olds", "12" = "12-month-olds", "18" = "18-months-olds"))
+  ) +
+  scale_x_discrete(name = "Language Group") +
+  scale_y_continuous(name = "Difference Score (Switch-Same)") +
+  scale_fill_brewer(palette = "Dark2", name = "Direction of Switch", labels = c("into dominant", "into non-dominant")) +
+  theme_apa() +
+  theme(legend.position = "bottom")
+
+ggsave(here("output", "figures", "FP_direction_of_switch_box_only.pdf"), height = 5, width = 10)
+```

@@ -1,0 +1,17 @@
+part_id,health_comments,exclude_health_comments
+FP18_P031,"Bilateral Ptosis on left eye(droopy eye lids)-Cosmetic",FALSE
+FP12_P003,Ear infection at 7 months,FALSE
+FP12_P010,"at 12 months, doctor said baby's language performance was below average, will test again at 18 months",FALSE
+FP18_P054,Ear infection at 16 months,FALSE
+FP18_P049,"During pregnancy: cord wrapped, high BP, showing DCs",FALSE
+FP18_P055,"Anémie Falciforme, SC.",FALSE
+FP12_P039,"- has had multiple ear infections in the past, had tubes put in her ears- diagnosed with diabetes",FALSE
+FP18_P011,Hospitalized until 5 days old because of blood incompatibility which resulted in severe jaundice but no developmental repercussions,FALSE
+FP12_P040,"Had heart murmur, is okay now",FALSE
+FP18_P050,"Pneumonia  then asthma at 13 months",FALSE
+FP12_P004,"had bacterial meningitis as a newborn, was treated in NICU but no long-term consequences, specifically no hearing loss (in hospital from 5-days old to 3 weeks)",FALSE
+FP12_P036,Slower language development than average baby,FALSE
+FP12_P049,Behind in weight gain and motor milestones for first 11months,FALSE
+FP12_P016,Ear infection at 11m,FALSE
+FP12_P055,Hospitalized for bronchopneumonia and bronchiolitis,FALSE
+FP18_P039,Strabismus,FALSE

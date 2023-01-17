@@ -1,0 +1,503 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+
+#  Data Preparation 
+## library() calls
+see groundhog_packages.R for more package setup
+```{r setup, include=FALSE}
+# load all required libraries using the groundhog package (installs libraries that are not installed yet)
+source("load_packages.R")
+```
+
+## read eyetracking info
+```{r}
+data <- readRDS(here("output", "processed_data", "FacePrince_raw_eye_data.Rdata"))
+```
+
+
+
+## read trial  information 
+```{r}
+# side of presentation for each object
+trial_info <- read_csv(here("data", "study_2_other_files", "facePrince_trial_info.csv")) %>%
+  rename(trial_language = trial_lang)
+```
+
+## read participant info
+```{r}
+part_info <- readRDS(here("output", "processed_data", "anonymized_participant_info", "fp_part_info.Rdata"))
+```
+
+
+
+
+
+# participant exclusion
+## premature birth
+```{r}
+part_info <- part_info %>%
+  mutate(exclude_premature = case_when(
+    gestation_weeks < 37 | gestation == "Prem" ~ 1,
+    weight_in_grams < 2500 ~ 1,
+    is.na(weight_in_grams) & is.na(gestation_weeks) ~ as.numeric(NA),
+    TRUE ~ 0
+  ))
+```
+
+## health 
+```{r}
+# to do
+part_info <- part_info %>%
+  mutate(exclude_health = NA)
+
+
+
+part_info %>%
+  distinct(health_comments, .keep_all = T) %>%
+  select(part_id, health_comments) %>%
+  write_csv(here("data", "study_2_other_files", "fp_health_to_check.csv"))
+health_comments_checked <- read_csv(here("data", "study_2_other_files", "fp_health_checked.csv"))
+
+part_info <- part_info %>%
+  left_join(health_comments_checked %>% select(-health_comments)) %>%
+  mutate(exclude_health = ifelse(exclude_health_comments == FALSE | is.na(health_comments), 0, 1))
+```
+## age
+```{r}
+### create age group variable
+
+age_ranges <- read_csv(here("data", "age_ranges.csv"))
+
+
+part_info <- part_info %>%
+  mutate(age_group = as.double(str_extract(study_name, "[0-9]{1,2}"))) %>%
+  left_join(age_ranges %>% select(age_group, min_age_continuous, max_age_continuous), by = "age_group")
+
+part_info <- part_info %>%
+  rowwise() %>%
+  mutate(exclude_age = case_when(
+    between(as.numeric(age_in_days), as.numeric(min_age_continuous), as.numeric(max_age_continuous)) ~ 0,
+    TRUE ~ 1
+  )) %>%
+  ungroup() %>%
+  select(-min_age_continuous, -max_age_continuous)
+```
+
+
+## language
+
+```{r}
+part_info <- part_info %>%
+  mutate(exclude_language = case_when(
+    lang_group == "none" ~ 1,
+    !is.na(lang_group) ~ 0,
+    TRUE ~ as.numeric(NA)
+  ))
+```
+
+## prior study exclusions
+by accident, FP18_P056 got scheduled after they already participated in LP. discussed with Krista that I won't exclude
+```{r}
+part_info <- part_info %>%
+  mutate(exclude_priorStudy = 0) # no one gets excluded for this
+```
+
+
+## overview of participant exclusions
+```{r}
+part_info <- part_info %>%
+  mutate(
+    exclude_summary = case_when(
+      exclude_priorStudy == 1 ~ "0_experimenterError", # should not have been scheduled
+      exclude_age == 1 ~ "1_age",
+      exclude_premature == 1 ~ "2_preterm",
+      exclude_health == 1 ~ "3_health",
+      exclude_language == 1 ~ "4_language",
+      TRUE ~ "keeper"
+    ),
+    exclude = case_when(
+      exclude_summary != "keeper" ~ 1,
+      TRUE ~ 0
+    )
+  )
+
+part_info %>%
+  group_by(study, exclude_summary, lang_group) %>%
+  count()
+```
+## remove unneccesary variables
+```{r}
+part_info <- part_info %>%
+  select(
+    -lang_percent_total, -starts_with("gestation"),
+    -lang_group_by_lang, -starts_with("lang_exp_oth"), -starts_with("health"), -weight_in_grams
+  )
+```
+
+
+# eyetracking dataframe prep
+
+
+
+## add trial info
+### create variables on trial info from soundfile name etc. 
+```{r}
+data <- data %>% rename(
+  gaze_x = gaze_point_x_adc_spx,
+  gaze_y = gaze_point_y_adc_spx,
+  timestamp = recording_timestamp,
+  order = studio_test_name
+)
+data %<>% mutate(
+  attentiongetter = case_when(
+    startsWith(as.character(data$media_name), "AttentionGetterGrey") ~ TRUE,
+    TRUE ~ FALSE
+  ),
+  movie_name = case_when(
+    attentiongetter == TRUE ~ "",
+    grepl(".wmv", media_name) ~ str_remove(media_name, ".wmv")
+  )
+)
+
+
+rev_lang <- function(language) {
+  if (!language %in% c("Eng", "Fr")) {
+    return(language)
+  }
+  result <- case_when(
+    language == "Eng" ~ "Fr",
+    language == "Fr" ~ "Eng"
+  )
+
+  result
+}
+data <- data %>%
+  separate(movie_name,
+    into = c("trial_speaker", "trial_lang_assigned_to_speaker", "trial_vid"),
+    sep = "_",
+    remove = F
+  ) %>%
+  mutate( # write out trial_speaker:
+    trial_vid = tolower(trial_vid),
+    speaker_gender = case_when(
+      trial_speaker == "Male" ~ "man",
+      trial_speaker == "Fem" ~ "woman"
+    ),
+    phase = factor(if_else(trial_vid %in% c("same", "switch"), "test", "familiarization")),
+    trial_type = factor(if_else(phase == "test", trial_vid, NA_character_))
+  ) %>%
+  select(-trial_speaker)
+
+
+
+# data %>% distinct(participant_name, trial_number, .keep_all = TRUE) %>%
+#  select(phase, trial_type, fam_type, trial_lang, trial_speaker, movie_name) %>% View()
+```
+
+###  add info on trials
+```{r}
+# add info on which image is being seen
+
+data <- left_join(data, trial_info,
+  by = c("order", "movie_name")
+)
+
+data %>%
+  group_by(is.na(trial_number), attentiongetter) %>%
+  count()
+```
+
+
+
+## dealing with track loss
+```{r}
+data <- data %>% mutate(
+  track_loss_reason =
+    case_when(
+      between(validity_right, 2, 4) | between(validity_left, 2, 4) ~ "validity is bad", is.na(gaze_y) ~ "no info on coord y",
+      is.na(gaze_x) ~ "no info on coord x",
+      between(gaze_x, 0, 1920) ~ "",
+      between(gaze_y, 0, 1200) ~ "",
+      gaze_x < 0 | gaze_x > 1920 ~ "outside of box",
+      gaze_y < 0 | gaze_y > 1200 ~ "outside of box",
+      TRUE ~ "not sure"
+    ),
+  track_loss = ifelse(track_loss_reason != "", TRUE, FALSE)
+)
+```
+
+## add AOI info
+AOI is full screen
+```{r}
+(aoi_info <- data.frame(
+  target_side = "full_screen",
+  L = 0, R = 1920, # left, right
+  `T` = 0, B = 1200 # top, bottom
+))
+
+
+data <- add_aoi(data,
+  aoi_info,
+  x_col = "gaze_x",
+  y_col = "gaze_y",
+  aoi_name = "full_screen"
+)
+```
+
+
+## check that data are on the right coordinate system
+```{r}
+# get rid of rows for attentiongetter &  where no video is presented
+data <- data %>%
+  filter(
+    attentiongetter != TRUE,
+    !is.na(media_name),
+    media_name != ""
+  ) %>%
+  rename(gaze_y_tobii = gaze_y) %>%
+  # Put GazePoint is on a cartesian coordinate system instead of Tobii system
+  mutate(gaze_y = (gaze_y_tobii - 1200) * -1) %>%
+  select(-gaze_y_tobii, -attentiongetter, -studio_project_name, -studio_event_data)
+# the following code takes a bit to run
+# check that there are no outliers left ( all gaze points are y:0-1200 and x 0-1900)
+# with(data[data$track_loss==F,], plot(gaze_x, gaze_y)) #HK note: To me, the plot shows quite a few data points outside the range expected
+```
+## add info on participants with missing eyetracking data
+```{r}
+data <- data %>%
+  mutate(has_eye_data = TRUE) # all participants in our dataframe have some kind of eyetracking data
+
+participants_with_no_eye_data <- read_csv(here("data", "study_2_other_files", "fp_check_eye_data.csv"))
+
+
+
+# merge missing data and eye_data_raw
+data <- data %>%
+  full_join(participants_with_no_eye_data, by = c("part_id", "has_eye_data"))
+```
+
+
+
+
+# Merge eyetracking data with participant info
+
+
+
+## check whether participants are missing from either set
+```{r}
+missing_from_info <- data %>%
+  distinct(part_id, .keep_all = T) %>%
+  anti_join(part_info) %>%
+  print()
+
+
+missing_from_eyetracker <- part_info %>%
+  distinct(part_id) %>%
+  anti_join(data %>% distinct(part_id)) %>%
+  arrange(part_id) %>%
+  print()
+```
+
+## merge
+
+```{r}
+full_data <- full_join(data, part_info, by = "part_id")
+
+# find matching mistakes
+full_data %>%
+  group_by(part_id, lang_group) %>%
+  summarize(mean.en = mean(percent_english, na.rm = T)) %>%
+  arrange(mean.en)
+rm(data)
+```
+
+# eyetrackingR steps
+
+## eyetrackingR preparations
+```{r}
+# delete duplicated rows (artifact introduced by tobii eyetracker)
+full_data_dup_removed <- full_data %>%
+  arrange(part_id, trial_number, timestamp, studio_event) %>%
+  distinct(part_id, trial_number, timestamp, .keep_all = T)
+
+data_eye_r <- make_eyetrackingr_data(full_data_dup_removed,
+  participant_column = "part_id",
+  trial_column = "trial_number",
+  time_column = "timestamp",
+  trackloss_column = "track_loss",
+  aoi_columns = c("full_screen"),
+  treat_non_aoi_looks_as_missing = FALSE
+)
+
+
+# check that no participants & trial are missing a moviestart & movieend message
+full_data_dup_removed %>% # filter(!is.na(studio_event)) %>%
+  group_by(part_id, media_name, studio_event) %>%
+  count() %>%
+  spread(studio_event, n) %>%
+  filter(is.na(MovieEnd) | is.na(MovieStart))
+
+# clean up df we don't need anymore
+rm(full_data)
+rm(full_data_dup_removed)
+gc()
+```
+
+## rezero trials to beginning of trial
+
+```{r}
+# create a trial-specific timestamp (instead of timestamp relative to start of study)
+data_rezero <- subset_by_window(data_eye_r,
+  window_start_msg = "MovieStart",
+  window_end_msg = "MovieEnd",
+  msg_col = "studio_event",
+  rezero = T
+)
+# need to rerun eyetrackingR because properties got lost?
+data_rezero <- make_eyetrackingr_data(data_rezero,
+  participant_column = "part_id",
+  trial_column = "movie_name",
+  time_column = "timestamp",
+  trackloss_column = "track_loss",
+  aoi_columns = c("full_screen"),
+  treat_non_aoi_looks_as_missing = FALSE
+)
+```
+# remove eyetracking data for videos that are longer
+
+# calculate looking time 
+## length of shortest video
+it wasn't possible to make all videos same length, so we set the maximum looking time to the shortest length of any of the videos used
+```{r}
+video_lengths <- data_rezero %>%
+  filter(phase == "test") %>%
+  group_by(media_name) %>%
+  summarize(max = max(timestamp))
+
+shortest_video_length <- video_lengths %>%
+  pull(max) %>%
+  min(., na.rm = T)
+```
+## cap for each trial to shortest video length
+capped at the shortest test video, then average
+
+```{r}
+data_rezero <- data_rezero %>%
+  filter(timestamp <= shortest_video_length)
+```
+
+
+
+## save data for pupillometry analysis
+need to do this before I remove participants for low looking in eyetracking, separate exclusion criteria there!
+```{r}
+data_rezero %>%
+  select(
+    study, part_id, gender, order, trial_number, exclude_summary, exclude,
+    age_in_months, age_group,
+    lang_group, percent_english, percent_french, percent_other, child_ethnicity, years_education,
+    phase, fam_type, trial_type,
+    gaze_x, gaze_y, validity_left, validity_right, pupil_left, pupil_right, full_screen, track_loss, track_loss_reason,
+    speaker_gender, movie_name, timestamp
+  ) %>%
+  mutate(trial_number = as.numeric(as.character(trial_number))) %>%
+  saveRDS(here("output", "processed_data", "fp_pupil_preprocessed.Rdata"))
+```
+
+# prepare data for eyetracking looking time analysis
+## exclude trails with trackloss
+```{r}
+## Trackloss analysis
+
+trackloss <- trackloss_analysis(data_rezero) %>%
+  mutate(SamplesInAoi = Samples - TracklossSamples) %>%
+  mutate(exclude_low_looking = ifelse(SamplesInAoi >= 60, 0, 1))
+
+data_clean_all_subj <- data_rezero %>%
+  left_join(trackloss %>% select(part_id, movie_name, exclude_low_looking)) %>%
+  filter(exclude_low_looking != 1)
+```
+## check how many participants I have pre-removal
+
+```{r}
+data_clean_all_subj %>%
+  distinct(part_id, .keep_all = TRUE) %>%
+  group_by(study) %>%
+  count(exclude_summary) %>%
+  pivot_wider(names_from = study, values_from = n, values_fill = 0)
+```
+
+## get dataframe with only keepers for trail analysis
+```{r}
+data_clean_keepers <- data_clean_all_subj %>% filter(exclude_summary == "keeper")
+```
+
+## check if enough test trials for remaining participant
+need at least 1 switch 1 same trial
+```{r}
+# check if enough data
+
+drop_notenoughtrials <- data_clean_keepers %>%
+  group_by(part_id, phase, trial_type) %>%
+  distinct(trial_number, .keep_all = T) %>%
+  count(.drop = F) %>%
+  group_by(part_id) %>%
+  mutate(exclude_notenoughtrials = case_when(
+    min(n) < 1 ~ 1,
+    length(n) < 3 ~ 1,
+    TRUE ~ 0
+  )) %>%
+  arrange(-exclude_notenoughtrials)
+
+# summarize which participants are excluded (get rid of diff rows for phase and trial type)
+drop_notenoughtrials_merge <- drop_notenoughtrials %>%
+  group_by(part_id) %>%
+  summarize(
+    exclude_trials = ifelse(sum(exclude_notenoughtrials) > 0, 1, 0)
+  ) # if any exclusion reason present (either for fam or test, mark as 1 ie remove)
+
+data_clean <- data_clean_all_subj %>%
+  full_join(drop_notenoughtrials_merge) %>%
+  mutate(
+    exclude = case_when(
+      exclude == 1 ~ exclude, # if was already excluded, no change
+      exclude_trials == 1 ~ 1,
+      TRUE ~ exclude
+    ),
+    exclude_summary = case_when(
+      exclude_summary == "keeper" & exclude_trials == 1 ~ "5_not_enough_data",
+      TRUE ~ exclude_summary
+    )
+  )
+
+
+
+rm(data_eye_r, data_rezero)
+```
+
+
+
+
+
+
+
+
+## save eyetracking data for merged analysis
+```{r}
+data_clean %>%
+  select(
+    study, part_id, gender, order, trial_number, exclude_summary, exclude,
+    age_in_months, age_group,
+    lang_group, percent_english, percent_french, percent_other, child_ethnicity, years_education, lang_mix,
+    phase, fam_type, trial_type,
+    gaze_x, gaze_y, validity_left, validity_right, pupil_left, pupil_right, full_screen, track_loss, track_loss_reason, speaker_gender, movie_name, timestamp
+  ) %>%
+  mutate(trial_number = as.numeric(as.character(trial_number))) %>%
+  saveRDS(here("output", "processed_data", "fp_preprocessed.Rdata"))
+```

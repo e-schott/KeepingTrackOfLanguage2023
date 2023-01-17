@@ -1,0 +1,13 @@
+name,text,robust,sort,group
+trial_type,"F[1, 36] = 0.00, MSE = 0.13, p = .955, eta2p = .000","F[1, 36] = 0.00, MSE = 4.07, p = .995, eta2p = .000",10,lp5mo
+lang_group,"F[1, 36] = 0.26, MSE = 0.57, p = .615, eta2p = .007","F[1, 36] = 0.56, MSE = 17.55, p = .459, eta2p = .015",10,lp5mo
+lang_group_trial_type,"F[1, 36] = 0.00, MSE = 0.13, p = .981, eta2p = .000","F[1, 36] = 0.01, MSE = 4.07, p = .936, eta2p = .000",21,lp5mo
+trial_type,"F[1, 44] = 0.04, MSE = 0.26, p = .842, eta2p = .001","F[1, 44] = 0.46, MSE = 3.11, p = .502, eta2p = .010",10,lp12mo
+lang_group,"F[1, 44] = 0.36, MSE = 0.57, p = .554, eta2p = .008","F[1, 44] = 0.49, MSE = 8.67, p = .486, eta2p = .011",10,lp12mo
+lang_group_trial_type,"F[1, 44] = 1.04, MSE = 0.26, p = .313, eta2p = .023","F[1, 44] = 1.12, MSE = 3.11, p = .295, eta2p = .025",21,lp12mo
+trial_type,"F[1, 40] = 3.89, MSE = 0.09, p = .056, eta2p = .089","F[1, 40] = 2.47, MSE = 4.90, p = .124, eta2p = .058",10,fp12mo
+lang_group,"F[1, 40] = 3.53, MSE = 0.39, p = .067, eta2p = .081","F[1, 40] = 3.12, MSE = 19.08, p = .085, eta2p = .072",10,fp12mo
+lang_group_trial_type,"F[1, 40] = 0.48, MSE = 0.09, p = .491, eta2p = .012","F[1, 40] = 0.19, MSE = 4.90, p = .667, eta2p = .005",21,fp12mo
+trial_type,"F[1, 37] = 1.76, MSE = 0.24, p = .193, eta2p = .045","F[1, 37] = 1.40, MSE = 9.18, p = .244, eta2p = .036",10,fp18mo
+lang_group,"F[1, 37] = 1.18, MSE = 0.66, p = .284, eta2p = .031","F[1, 37] = 1.72, MSE = 39.06, p = .197, eta2p = .044",10,fp18mo
+lang_group_trial_type,"F[1, 37] = 0.49, MSE = 0.24, p = .488, eta2p = .013","F[1, 37] = 0.85, MSE = 9.18, p = .363, eta2p = .022",21,fp18mo

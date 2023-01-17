@@ -1,0 +1,367 @@
+
+---
+title: "LP04 merge eyetracking and participant info"
+output:
+  html_document:
+    df_print: paged
+---
+
+######################
+#####
+
+# 1. Script prep 
+
+## 1.1 install/load packages
+
+
+## library() calls
+see groundhog_packages.R for more package setup
+```{r setup, include=FALSE}
+# load all required libraries using the groundhog package (installs libraries that are not installed yet)
+source("load_packages.R")
+```
+
+
+##  read in previously saved data
+
+```{r}
+# eyetracking data
+eye_data_raw <- import(file = here("output", "processed_data", "fullData-lp2.Rdata"))
+
+#####
+# info on participants
+part_list <- import(file = here("output", "processed_data", "MainSubjList-lp4.Rdata"))
+```
+
+## important columns for this script
+```{r}
+# from participant list
+# define columns relevant for our study
+info_for_analysis <- c(
+  "part_id", "age_group", "lang_group", "gender", "dominant_language",
+  "percent_english", "percent_french", "percent_other", "dominant_en_fr", "lang_mix",
+  "study", "exclude", "exclude_summary", "age_in_months", "age_in_days", "years_education", "child_ethnicity"
+)
+
+
+# for future analysis
+columns_to_keep <- c(
+  "study", "part_id", "gender", "order",
+  "trial_number", "exclude", "exclude_summary", "age_in_days",
+  "age_in_months", "age_group", "lang_group", "percent_english",
+  "percent_french", "percent_other", "child_ethnicity", "years_education", "lang_mix",
+  "dominant_language", "dom_test", "phase", "trial_type", "gaze_x",
+  "gaze_y", "validity_left", "validity_right", "pupil_left", "pupil_right",
+  "full_screen", "speaker_gender", "movie_name", "timestamp", "test_pair",
+  "track_loss", "track_loss_reason"
+)
+```
+
+
+# Data frame cleaning
+## check if any participants are not matching betwen master list and eyetracking data
+ok can't use baby id to merge here, because we didn't use to enter babyid here
+```{r}
+print("missing from main subject list but present in eyetracking data")
+(missing_from_part_list <- sort(setdiff(unique(eye_data_raw$part_id), part_list$part_id)))
+stopifnot(missing_from_part_list == 0)
+
+print("missing from eyetracking data but present in master subject list")
+
+(missing_from_eyetracking <- sort(setdiff(part_list$part_id, eye_data_raw$part_id)))
+
+# one of these is tested in condition we didn't pursue (LP18) and the other was experimenter error (file was lost)
+```
+
+## merge eyetracking data and participant info
+```{r}
+eye_full <- full_join(eye_data_raw,
+  part_list %>%
+    select(all_of(info_for_analysis)),
+  by = c("study", "part_id")
+)
+```
+
+
+## check if all participants are still in 
+```{r}
+eye_full %>%
+  select(study, part_id) %>%
+  distinct() %>%
+  group_by(study) %>%
+  summarize(N = n())
+```
+
+## create some necessary variables
+
+
+### trial type, dominant language, phase,...       
+
+```{r}
+eye_full %<>% mutate(phase = factor(ifelse(trial_number <= 8,
+  "familiarization",
+  "test"
+))) %>%
+  separate(
+    col = media_name,
+    into = c("speaker_gender", "trial_language", "trial_type"),
+    sep = "_",
+    remove = FALSE
+  ) %>%
+  mutate(
+    # actually, I prefer man/woman to male/female
+    speaker_gender = case_when(
+      speaker_gender == "Male" ~ "man",
+      speaker_gender == "Fem" ~ "woman"
+    ),
+    media_name = as.character(media_name),
+    familiarization_video_number = ifelse(phase == "familiarization", trial_type, as.character(NA)),
+    trial_type = ifelse(phase == "test", tolower(trial_type), as.character(NA)),
+    trial_language = case_when(
+      trial_language == "Eng" ~ "English",
+      trial_language == "Fr" ~ "French"
+    ),
+    trial_dominance = ifelse(dominant_en_fr == trial_language, "dominant", "non-dominant")
+  ) %>%
+  rename(movie_name = media_name)
+```
+
+
+### Switch into dominant or non-dominant language
+maybe it's easier to tell if the switch is into the dominant language or into the non-dominant language. so need to know which gender the person where the switch is into the dominant language is (aka was speaking non-dom and in switch dom)
+non-dominant language (aka was speaking dom and in switch now non-dominant)
+
+```{r}
+# order 1-4 have eng male and fr female
+# 5-8 vice versa
+eye_full %<>%
+  group_by(part_id) %>%
+  mutate(
+    order_numeric = as.numeric(substr(order, 2, 2)),
+    # which language are the woman and man speaking in fam
+    man_fam = ifelse(order_numeric <= 4, "English", "French"),
+    woman_fam = ifelse(order_numeric <= 4, "French", "English")
+  ) %>%
+  ungroup() %>%
+  mutate( # who speaks the participants dominant language during familiarization?
+    dom_fam = case_when(
+      dominant_en_fr == man_fam ~ "man",
+      dominant_en_fr == woman_fam ~ "woman"
+    ),
+    #    is the person who speaks dominant language in fam speaking? if yes, it is "switch into non-dominant" and vice versa
+
+    # for test, only categorize test trials
+    dom_test = case_when(
+      phase == "familiarization" ~ as.character(NA),
+      dom_fam == speaker_gender ~ "Switch into non-dominant language",
+      dom_fam != speaker_gender ~ "Switch into dominant language"
+    )
+  )
+```
+### 1st test pair vs 2nd test pair
+to see if attention decreases as test goes on
+```{r}
+eye_full %<>%
+  mutate(test_pair = case_when(
+    between(trial_number, 9, 10) ~ "pair1",
+    between(trial_number, 11, 12) ~ "pair2",
+    TRUE ~ as.character(NA)
+  ))
+```
+
+
+# eyetracking preparation
+### flag trials where there's track_loss/ looking outside of the screen
+
+```{r}
+eye_full %<>% mutate(
+  track_loss_reason =
+    case_when(
+      between(validity_right, 2, 4) | between(validity_left, 2, 4) ~ "validity is bad", is.na(gaze_y) ~ "no info on coord y",
+      is.na(gaze_x) ~ "no info on coord x",
+      between(gaze_x, 0, 1920) ~ "",
+      between(gaze_y, 0, 1200) ~ "",
+      gaze_x < 0 | gaze_x > 1920 ~ "outside of box",
+      gaze_y < 0 | gaze_y > 1200 ~ "outside of box",
+      TRUE ~ "not sure"
+    ),
+  # create a logical tracklos variable for ease of use
+  track_loss = ifelse(track_loss_reason != "", TRUE, FALSE)
+)
+```
+
+
+### create AOI
+for this study, it's the entire screen
+```{r}
+aoi_info <- data.frame(
+  target_side = "full_screen",
+  L = 0, R = 1920, # left, right
+  `T` = 0, B = 1200 # top, bottom
+)
+
+# add aoi column using eyetrackingR
+eye_full <- add_aoi(
+  data = eye_full, aoi_dataframe = aoi_info,
+  x_col = "gaze_x", y_col = "gaze_y",
+  aoi_name = "full_screen"
+)
+```
+
+
+
+
+
+## remove superfluous rows from eyetracker
+without this, eyetrackingR complains when running eyetrackingR. Unfortunately, this code runs for about 20min!
+```{r}
+# clean up the workspace to hopefully speed up this process
+rm(eye_data_raw)
+gc()
+# delete duplicated rows (artifact introduced by tobii eyetracker)
+eye_full <- eye_full %>%
+  select(all_of(columns_to_keep), studio_event) %>%
+  arrange(part_id, timestamp, studio_event) %>%
+  distinct(part_id, timestamp, .keep_all = T)
+beepr::beep()
+```
+
+   
+## convert data eyetrackingR format
+
+```{r}
+data <- make_eyetrackingr_data(eye_full,
+  participant_column = "part_id",
+  trial_column = "trial_number",
+  time_column = "timestamp",
+  trackloss_column = "track_loss",
+  aoi_columns = "full_screen",
+  treat_non_aoi_looks_as_missing = FALSE
+) %>%
+  mutate(trial_number = as.numeric(trial_number))
+```
+## rezero
+
+this results in a warning on the 9 rows of participants who don't have any eyetracking data
+```{r}
+data <- data %>%
+  mutate(time_from_start_of_study = timestamp)
+# create a trial-specific timestamp (instead of timestamp relative to start of study)
+data_rezero <- subset_by_window(data,
+  window_start_msg = "MovieStart",
+  window_end_msg = "MovieEnd",
+  msg_col = "studio_event",
+  rezero = T
+)
+
+# these are the participants the warning is for
+data %>%
+  group_by(part_id, movie_name, studio_event) %>%
+  count() %>%
+  spread(studio_event, n) %>%
+  rename(all_other_rows = "<NA>") %>%
+  arrange(all_other_rows)
+```
+
+
+
+
+## participant exclusion for not enough eyetracking data
+### create df with unique trials by participant & samples per trial
+
+```{r}
+track_loss_info <- trackloss_analysis(data) %>%
+  clean_names() %>%
+  mutate(
+    trial_number = as.numeric(trial_number),
+    n_good_samples = samples - trackloss_samples
+  ) %>%
+  # get info on trial type
+  # this is necessary because we need at least one trial of each test trial (same, switch)
+  full_join(data %>%
+    select(part_id, trial_number, trial_type, phase) %>%
+    distinct(part_id, trial_number, .keep_all = TRUE))
+```
+
+
+ tracker collects data roughly every 17ms. so in 1s, should have 
+1000/16.66667 = 60
+ at least 60 samples
+
+
+### check how many test trials with at least 60 samples I have
+
+```{r}
+summary_test_trials <- track_loss_info %>%
+  group_by(part_id) %>%
+  mutate(
+    n_trials = max(trial_number) # ,
+  ) %>%
+  group_by(part_id, trial_type) %>%
+  summarize(N = sum(n_good_samples >= 60)) %>%
+  pivot_wider(names_from = trial_type, values_from = N) %>%
+  mutate(
+    exclude_data_quality = case_when(
+      same >= 1 & switch >= 1 ~ 0,
+      same == 0 | switch == 0 ~ 1,
+      is.na(same) | is.na(switch) ~ 1,
+      TRUE ~ as.numeric(NA)
+    ),
+    exclude_data_quality_summary = ifelse(
+      exclude_data_quality == 1, "5_not_enough_data", "keeper"
+    )
+  )
+```
+
+
+
+
+
+# exclude participants with not enough trials
+## merge in info about not enough trials
+
+
+
+```{r}
+data %<>%
+  full_join(summary_test_trials %>% select(part_id, exclude_data_quality, exclude_data_quality_summary))
+
+data <- data %>%
+  mutate(
+    exclude_data_quality = ifelse(is.na(exclude_data_quality), 1, exclude_data_quality),
+    exclude_data_quality_summary = ifelse(is.na(exclude_data_quality_summary), "no ET data", exclude_data_quality_summary),
+    exclude_summary = case_when(
+      exclude_summary != "keeper" ~ exclude_summary,
+      exclude_data_quality_summary != "keeper" ~ exclude_data_quality_summary,
+      TRUE ~ exclude_summary
+    ),
+    exclude = case_when(
+      exclude == 1 ~ 1,
+      exclude == 0 & exclude_summary != "keeper" ~ 1,
+      TRUE ~ exclude
+    )
+  )
+```
+
+
+
+
+
+# re-zero timestamp to start of trial
+```{r}
+# create a trial-specific timestamp (instead of timestamp relative to start of study)
+data_rezero <- subset_by_window(data,
+  window_start_msg = "MovieStart",
+  window_end_msg = "MovieEnd",
+  msg_col = "studio_event",
+  rezero = T
+)
+```
+
+# save data
+```{r}
+data_rezero %>%
+  select(all_of(columns_to_keep)) %>%
+  export(file = here("output", "processed_data", "fullData-lp5.Rdata"))
+beepr::beep()
+```
